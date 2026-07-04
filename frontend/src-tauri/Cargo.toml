@@ -1,0 +1,50 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "Chebo AI Desktop Pet"
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.1", features = [] }
+
+[dependencies]
+serde_json    = "1.0"
+serde         = { version = "1.0", features = ["derive"] }
+log           = "0.4"
+tauri         = { version = "2.11.1", features = ["tray-icon"] }  # P2: 系统托盘
+tauri-plugin-log = "2"
+
+# ── 新增：Rust 后端替代 Python ──────────────────────────────────────────
+sqlx         = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+reqwest      = { version = "0.12", features = ["json", "stream", "multipart"] }
+tokio        = { version = "1", features = ["full"] }
+chrono       = { version = "0.4", features = ["serde"] }
+uuid         = { version = "1",   features = ["v4"] }
+anyhow       = "1"
+dotenvy      = "0.15"
+futures-util = "0.3"
+dirs         = "5"
+arboard      = "3"                                # P1: 剪贴板监听
+urlencoding  = "2"                               # P1: Web 搜索 URL 编码
+tauri-plugin-global-shortcut = "2"               # P2: 全局快捷键
+sha2         = "0.10"                            # Memory Tree: 内容 sha256 校验
+async-trait  = "0.1"                             # Tool trait 异步方法
+screenshots  = { version = "0.8", features = [] } # P2: 全屏截图工具
+base64       = "0.22"                            # P2: 截图 base64 编码
+lazy_static  = "1.5"                             # provider_registry: 静态注册表
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys  = { version = "0.52", features = [  # P1/P2: Windows API
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+] }

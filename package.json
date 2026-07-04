@@ -1,0 +1,11 @@
+{
+  "name": "chebo-desktop-pet",
+  "private": true,
+  "description": "Chebo AI 桌面宠物 — 在仓库根目录也可启动",
+  "scripts": {
+    "dev": "pnpm --dir frontend tauri:dev",
+    "build": "pnpm --dir frontend tauri:build",
+    "install:frontend": "pnpm --dir frontend install",
+    "clean:rust": "powershell -NoProfile -Command \"Remove-Item -Recurse -Force 'frontend/src-tauri/target' -ErrorAction SilentlyContinue\""
+  }
+}

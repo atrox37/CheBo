@@ -1,0 +1,3 @@
+# Windows 下编译大型 Tauri 项目时，避免 link.exe / rustc 栈溢出
+[env]
+RUST_MIN_STACK = "67108864"

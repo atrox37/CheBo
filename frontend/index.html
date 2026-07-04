@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN" style="background:rgba(0,0,0,0)!important">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chebo</title>
+    <style>
+      /* 关键：让 WebView2 透明渲染生效 */
+      html, body, #app {
+        background-color: rgba(0, 0, 0, 0) !important;
+        background: transparent !important;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
