@@ -586,6 +586,18 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    // ── 工具配置表（用户可开关工具、设置自动批准、每日限额）────────────────
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tool_config (
+            tool_name    TEXT    PRIMARY KEY,
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            auto_approve INTEGER NOT NULL DEFAULT 0,
+            daily_limit  INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
@@ -1714,4 +1726,111 @@ pub async fn count_memory_vectors(pool: &SqlitePool) -> Result<i64> {
         .fetch_one(pool)
         .await?;
     Ok(row.get("cnt"))
+}
+
+// ─── tool_config CRUD ─────────────────────────────────────────────────────────
+
+/// 工具配置条目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolConfigEntry {
+    pub tool_name:    String,
+    /// 1=开启, 0=关闭
+    pub enabled:      i64,
+    /// 1=自动批准(免确认), 0=需确认
+    pub auto_approve: i64,
+    /// 每日限额(0=无限制)
+    pub daily_limit:  i64,
+}
+
+/// 获取所有工具配置
+pub async fn get_all_tool_configs(pool: &SqlitePool) -> Result<Vec<ToolConfigEntry>> {
+    let rows = sqlx::query(
+        "SELECT tool_name, enabled, auto_approve, daily_limit FROM tool_config ORDER BY tool_name",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| ToolConfigEntry {
+            tool_name:    r.get("tool_name"),
+            enabled:      r.get("enabled"),
+            auto_approve: r.get("auto_approve"),
+            daily_limit:  r.get("daily_limit"),
+        })
+        .collect())
+}
+
+/// 获取单个工具配置
+pub async fn get_tool_config(pool: &SqlitePool, tool_name: &str) -> Result<Option<ToolConfigEntry>> {
+    let row = sqlx::query(
+        "SELECT tool_name, enabled, auto_approve, daily_limit FROM tool_config WHERE tool_name=?",
+    )
+    .bind(tool_name)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| ToolConfigEntry {
+        tool_name:    r.get("tool_name"),
+        enabled:      r.get("enabled"),
+        auto_approve: r.get("auto_approve"),
+        daily_limit:  r.get("daily_limit"),
+    }))
+}
+
+/// 更新工具配置（upsert）
+pub async fn upsert_tool_config(
+    pool:         &SqlitePool,
+    tool_name:    &str,
+    enabled:      i64,
+    auto_approve: i64,
+    daily_limit:  i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO tool_config (tool_name, enabled, auto_approve, daily_limit)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(tool_name) DO UPDATE SET
+             enabled      = excluded.enabled,
+             auto_approve = excluded.auto_approve,
+             daily_limit  = excluded.daily_limit",
+    )
+    .bind(tool_name)
+    .bind(enabled)
+    .bind(auto_approve)
+    .bind(daily_limit)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 初始化默认工具配置（仅当表中没有记录时插入）
+pub async fn init_default_tool_configs(pool: &SqlitePool, tool_names: &[&str]) -> Result<()> {
+    for name in tool_names {
+        sqlx::query(
+            "INSERT OR IGNORE INTO tool_config (tool_name, enabled, auto_approve, daily_limit)
+             VALUES (?, 1, 0, 0)",
+        )
+        .bind(name)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// 检查工具是否已开启（用户未关闭）
+pub async fn is_tool_enabled(pool: &SqlitePool, tool_name: &str) -> Result<bool> {
+    let row = sqlx::query(
+        "SELECT enabled FROM tool_config WHERE tool_name = ?",
+    )
+    .bind(tool_name)
+    .fetch_optional(pool)
+    .await?;
+
+    match row {
+        Some(r) => {
+            let enabled: i64 = r.get("enabled");
+            Ok(enabled != 0)
+        }
+        None => Ok(true), // 没有配置默认视为开启
+    }
 }

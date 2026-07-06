@@ -25,8 +25,8 @@ use crate::llm::{self, LlmConfig, LlmMessage};
 
 // ─── 常量 ─────────────────────────────────────────────────────────────────────
 
-/// 积累多少条新消息后触发自动摘要
-const SUMMARIZE_EVERY: i64 = 20;
+/// 积累多少条新消息后触发自动摘要（从20降到10，增加摘要密度）
+const SUMMARIZE_EVERY: i64 = 10;
 
 // ─── v1 兼容接口（已有代码引用） ─────────────────────────────────────────────
 
@@ -100,8 +100,8 @@ pub async fn build_rich_context_string(
         }
     }
 
-    // ── 2. 中期：历史对话摘要（最近 2 条）───────────────────────────────────
-    if let Ok(summaries) = db::get_summaries(pool, 2).await {
+    // ── 2. 中期：历史对话摘要（最近 10 条，从2提升到10以覆盖更长的对话历史）───
+    if let Ok(summaries) = db::get_summaries(pool, 10).await {
         if !summaries.is_empty() {
             let lines: Vec<String> = summaries
                 .iter()
@@ -232,11 +232,16 @@ pub async fn maybe_summarize(
         .join("\n");
 
     let prompt = format!(
-        "请对以下对话进行简洁摘要（100字以内），重点提取：用户做了什么、讨论了什么话题、有哪些重要信息。\n\n{conv_text}"
+        "请对以下对话进行详细摘要（200-300字），必须包含：\n\
+         1. 用户当前在做什么/想做什么（项目、目标、问题）\n\
+         2. 具体的技术栈、工具、路径等细节信息\n\
+         3. 用户表达的个人信息（职业、兴趣、习惯等）\n\
+         4. Chebo 给出的关键建议或信息\n\
+         5. 用户的情感状态或偏好\n\n{conv_text}"
     );
 
     let llm_msgs = vec![
-        LlmMessage::system("你是一个对话摘要助手，请用简洁中文概括对话内容。"),
+        LlmMessage::system("你是一个细致的对话记忆助手，请完整保留关键信息，不要过度压缩。"),
         LlmMessage::user(&prompt),
     ];
 

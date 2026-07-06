@@ -50,6 +50,7 @@ export async function switchToAssistant(): Promise<void> {
     try { await win.setMinSize(new LogicalSize(ASSISTANT_WIDTH, ASSISTANT_HEIGHT)) } catch (e) { console.warn('setMinSize', e) }
     try { await win.setSize(new LogicalSize(ASSISTANT_WIDTH, ASSISTANT_HEIGHT)) } catch (e) { console.warn('setSize', e) }
     try { await win.center()              } catch (e) { console.warn('center', e) }
+    try { await win.setSkipTaskbar(false) } catch (e) { console.warn('setSkipTaskbar', e) }
 
     await sleep(80)
     await fadeIn(win)
@@ -83,6 +84,7 @@ export async function switchToPet(): Promise<void> {
     try { await win.setMinSize(new LogicalSize(320, 285)) } catch (e) { console.warn('setMinSize', e) }
     try { await win.setShadow(false)                  } catch (e) { console.warn('setShadow', e) }
     try { await win.setSize(new LogicalSize(320, 285)) } catch (e) { console.warn('setSize', e) }
+    try { await win.setSkipTaskbar(true)               } catch (e) { console.warn('setSkipTaskbar', e) }
 
     // 恢复之前的桌宠位置（确保仍在可见工作区内）
     if (savedPos) {

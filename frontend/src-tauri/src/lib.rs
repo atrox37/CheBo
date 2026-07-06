@@ -40,6 +40,7 @@ use tauri::Manager;
 
 use crate::agent::AgentRuntime;
 use crate::commands::*;
+use crate::db::init_default_tool_configs;
 use crate::event_bus::EventBus;
 use crate::lib_state::{AppConfig, AppState};
 use crate::llm::LlmConfig;
@@ -180,6 +181,18 @@ pub fn run() {
                 log::warn!("Vault 初始化失败: {e}");
             }
 
+            // ── 4.5. 初始化工具配置（为所有已注册工具创建默认配置）────────────
+            {
+                let tool_names: Vec<String> = tool_registry.names().into_iter().map(|s| s.to_string()).collect();
+                let pool_cfg = pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    let names: Vec<&str> = tool_names.iter().map(|s| s.as_str()).collect();
+                    if let Err(e) = init_default_tool_configs(&pool_cfg, &names).await {
+                        log::warn!("初始化工具配置失败: {e}");
+                    }
+                });
+            }
+
             // ── 5. 注册 AppState ──────────────────────────────────────────────
             app.manage(AppState {
                 pool:          pool.clone(),
@@ -315,6 +328,9 @@ pub fn run() {
             // 沙盒路径配置
             get_sandbox_paths,
             set_sandbox_paths,
+            // 工具配置管理
+            get_tool_configs,
+            update_tool_config,
             // 窗口
             start_drag,
             // Batch C: 工具（权限分级）

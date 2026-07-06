@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { Volume2, Pin, Palette, Globe, HelpCircle, X, MessageSquare, Database, FolderOpen, RefreshCw, Mic } from 'lucide-vue-next'
+import { ref, computed, onMounted, reactive } from 'vue'
+import { Volume2, Pin, Palette, Globe, HelpCircle, X, MessageSquare, Database, FolderOpen, RefreshCw, Mic, Wrench } from 'lucide-vue-next'
 import * as tauriService from '@/services/tauriService'
 import { useVoiceStore } from '@/utils/speechTiming'
 import { STORAGE_KEYS } from '@/utils/storageKeys'
@@ -130,7 +130,6 @@ async function triggerSync() {
   try {
     const msg = await invoke<string>('trigger_vault_sync')
     vaultSyncMsg.value = msg
-    // 等待后台同步完成事件后刷新统计
     setTimeout(async () => {
       try { vaultStats.value = await invoke<VaultStats>('get_vault_stats') } catch {}
     }, 3000)
@@ -144,12 +143,87 @@ async function triggerSync() {
 function openVaultFolder() {
   invoke('open_vault_folder').catch(() => {})
 }
+
+/* ── 工具配置弹窗 ── */
+interface ToolConfigItem {
+  name: string
+  description: string
+  permission: number
+  permission_label: string
+  category: string
+  enabled_by_default: boolean
+  enabled: number
+  auto_approve: number
+  daily_limit: number
+}
+
+const showTools = ref(false)
+const toolConfigs = ref<ToolConfigItem[]>([])
+const toolLoading = ref(false)
+const toolSaving = ref(false)
+
+interface ToolCategoryGroup {
+  label: string
+  items: ToolConfigItem[]
+}
+
+const toolCategoryList = computed<ToolCategoryGroup[]>(() => {
+  const map = new Map<string, ToolConfigItem[]>()
+  for (const t of toolConfigs.value) {
+    if (!map.has(t.category)) map.set(t.category, [])
+    map.get(t.category)!.push(t)
+  }
+  return Array.from(map.entries()).map(([label, items]) => ({ label, items }))
+})
+
+async function openTools() {
+  showTools.value = true
+  if (toolConfigs.value.length > 0) return
+  toolLoading.value = true
+  try {
+    toolConfigs.value = await invoke<ToolConfigItem[]>('get_tool_configs')
+  } catch (e) {
+    toolConfigs.value = []
+  } finally {
+    toolLoading.value = false
+  }
+}
+
+function closeTools() {
+  showTools.value = false
+}
+
+async function toggleTool(tool: ToolConfigItem) {
+  tool.enabled = tool.enabled ? 0 : 1
+  toolSaving.value = true
+  try {
+    await invoke('update_tool_config', {
+      payload: { tool_name: tool.name, enabled: tool.enabled }
+    })
+  } catch {
+    tool.enabled = tool.enabled ? 0 : 1
+  } finally {
+    toolSaving.value = false
+  }
+}
+
+async function toggleAutoApprove(tool: ToolConfigItem) {
+  tool.auto_approve = tool.auto_approve ? 0 : 1
+  toolSaving.value = true
+  try {
+    await invoke('update_tool_config', {
+      payload: { tool_name: tool.name, auto_approve: tool.auto_approve }
+    })
+  } catch {
+    tool.auto_approve = tool.auto_approve ? 0 : 1
+  } finally {
+    toolSaving.value = false
+  }
+}
 </script>
 
 <template>
   <div class="sp">
-
-    <!-- Toggle 行 -->
     <div v-for="item in toggleItems" :key="item.id" class="s-row">
       <div class="s-left">
         <div class="s-ico-wrap">
@@ -226,6 +300,11 @@ function openVaultFolder() {
       <div class="s-left2"><div class="s-title">记忆存档</div><div class="s-sub">Vault · 双存储长期记忆</div></div>
       <span class="arrow">›</span>
     </button>
+    <button class="nav-row" @click.stop="openTools">
+      <Wrench :size="15" color="#9080a8" />
+      <div class="s-left2"><div class="s-title">工具管理</div><div class="s-sub">开关、自动批准、每日限额</div></div>
+      <span class="arrow">›</span>
+    </button>
     <button class="nav-row" @click.stop="showGuide = true">
       <HelpCircle :size="15" color="#9080a8" />
       <div class="s-left2"><div class="s-title">桌宠说明</div><div class="s-sub">玩法与数值规则</div></div>
@@ -244,10 +323,9 @@ function openVaultFolder() {
     </div>
     <button class="clear-btn" @click.stop="clearSession">重置会话</button>
     <div class="version">Chebo v0.1 · Phase 5.5</div>
-
   </div>
 
-  <!-- 聊天历史弹窗 -->
+  <!-- ── 聊天历史弹窗 ── -->
   <Teleport to="body">
     <transition name="guide">
       <div v-if="showHistory" class="guide-mask" @click.self="closeHistory">
@@ -262,10 +340,7 @@ function openVaultFolder() {
             <template v-else>
               <div v-for="group in historyGroups" :key="group.date" class="hist-group">
                 <div class="hist-day-label">{{ group.label }}</div>
-                <div
-                  v-for="m in group.messages" :key="m.id"
-                  :class="['hist-msg', m.role]"
-                >
+                <div v-for="m in group.messages" :key="m.id" :class="['hist-msg', m.role]">
                   <div class="hist-bubble">{{ m.content }}</div>
                   <div class="hist-time">{{ m.created_at.slice(11, 16) }}</div>
                 </div>
@@ -277,16 +352,14 @@ function openVaultFolder() {
     </transition>
   </Teleport>
 
-  <!-- 说明弹窗：用 Teleport 挂到 body，覆盖整个透明窗口 -->
+  <!-- ── 说明弹窗 ── -->
   <Teleport to="body">
     <transition name="guide">
       <div v-if="showGuide" class="guide-mask" @click.self="showGuide = false">
         <div class="guide-card">
           <div class="guide-hd">
             <span class="guide-title">🐾 Chebo 桌宠说明</span>
-            <button class="guide-close" @click.stop="showGuide = false">
-              <X :size="14" />
-            </button>
+            <button class="guide-close" @click.stop="showGuide = false"><X :size="14" /></button>
           </div>
           <div class="guide-body">
             <section>
@@ -304,7 +377,7 @@ function openVaultFolder() {
             <section>
               <h4>📚 学习 / 工作</h4>
               <p>在 <em>动作 → 学习/工作</em> 选择任务后 Chebo 开始计时，完成后获得金币和经验。</p>
-              <p>饥饱 &lt; 40 或活力 &lt; 25 时无法开始任务。</p>
+              <p>饥饱 < 40 或活力 < 25 时无法开始任务。</p>
             </section>
             <section>
               <h4>🌟 升级</h4>
@@ -325,7 +398,7 @@ function openVaultFolder() {
     </transition>
   </Teleport>
 
-  <!-- Vault 记忆存档弹窗 -->
+  <!-- ── Vault 记忆存档弹窗 ── -->
   <Teleport to="body">
     <transition name="guide">
       <div v-if="showVault" class="guide-mask" @click.self="showVault = false">
@@ -335,7 +408,6 @@ function openVaultFolder() {
             <Database :size="16" color="#c87090" />
             <span>记忆存档 · Memory Vault</span>
           </div>
-
           <div class="vault-stats" v-if="vaultStats">
             <div class="vault-stat-item">
               <span class="vault-stat-num">{{ vaultStats.chunk_count }}</span>
@@ -353,7 +425,6 @@ function openVaultFolder() {
             </div>
           </div>
           <div class="vault-no-stats" v-else>暂无统计数据</div>
-
           <div class="vault-tree">
             <div class="vault-tree-title">层级摘要树</div>
             <div class="vault-tree-row"><span class="vault-lvl l0">L0</span><span class="vault-lvl-desc">Chunks — 原始对话片段（每 10 条一组）</span></div>
@@ -364,28 +435,68 @@ function openVaultFolder() {
             <div class="vault-tree-arrow">↓</div>
             <div class="vault-tree-row"><span class="vault-lvl l3">L3</span><span class="vault-lvl-desc">Monthly — 每月长期记忆</span></div>
           </div>
-
           <div class="vault-path" v-if="vaultStats">
             <span class="vault-path-label">存储路径：</span>
             <span class="vault-path-val">{{ vaultStats.vault_path }}</span>
           </div>
-
           <div class="vault-sync-msg" v-if="vaultSyncMsg">{{ vaultSyncMsg }}</div>
-
           <div class="vault-actions">
             <button class="vault-btn primary" @click="triggerSync" :disabled="vaultSyncing">
               <RefreshCw :size="13" :class="{ spinning: vaultSyncing }" />
               {{ vaultSyncing ? '同步中…' : '立即同步' }}
             </button>
             <button class="vault-btn" @click="openVaultFolder">
-              <FolderOpen :size="13" />
-              打开文件夹
+              <FolderOpen :size="13" /> 打开文件夹
             </button>
           </div>
-
           <div class="vault-tip">
-            可用 <a href="https://obsidian.md" target="_blank" class="vault-link">Obsidian</a>
-            打开此目录，查看完整记忆图谱 ✦
+            可用 <a href="https://obsidian.md" target="_blank" class="vault-link">Obsidian</a> 打开此目录，查看完整记忆图谱 ✦
+          </div>
+        </div>
+      </div>
+    </transition>
+  </Teleport>
+
+  <!-- ── 工具管理弹窗 ── -->
+  <Teleport to="body">
+    <transition name="guide">
+      <div v-if="showTools" class="guide-mask" @click.self="closeTools">
+        <div class="guide-card tool-card">
+          <div class="guide-hd">
+            <span class="guide-title">🔧 工具管理</span>
+            <button class="guide-close" @click.stop="closeTools"><X :size="14" /></button>
+          </div>
+          <div class="guide-body tool-body">
+            <div v-if="toolLoading" class="tool-empty">加载中…</div>
+            <div v-else-if="toolConfigs.length === 0" class="tool-empty">暂无工具</div>
+            <template v-else>
+              <div v-for="cat in toolCategoryList" :key="cat.label" class="tool-cat">
+                <div class="tool-cat-label">{{ cat.label }}</div>
+                <div v-for="t in cat.items" :key="t.name" class="tool-item">
+                  <div class="tool-info">
+                    <div class="tool-name">
+                      <code>{{ t.name }}</code>
+                      <span class="tool-badge" :class="'lvl' + t.permission">{{ t.permission_label }}</span>
+                    </div>
+                    <div class="tool-desc">{{ t.description }}</div>
+                  </div>
+                  <div class="tool-actions">
+                    <label class="tool-tgl-label">
+                      <span>启用</span>
+                      <button class="toggle tool-tgl" :class="{ on: t.enabled === 1 }" @click.stop="toggleTool(t)">
+                        <span class="knob" />
+                      </button>
+                    </label>
+                    <label v-if="t.permission >= 3" class="tool-tgl-label">
+                      <span>免确认</span>
+                      <button class="toggle tool-tgl" :class="{ on: t.auto_approve === 1 }" @click.stop="toggleAutoApprove(t)">
+                        <span class="knob" />
+                      </button>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -395,14 +506,12 @@ function openVaultFolder() {
 
 <style scoped>
 .sp { padding: 6px 16px 14px; display: flex; flex-direction: column; gap: 6px; }
-
 .s-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
 .s-left { display: flex; align-items: center; gap: 10px; flex: 1; }
 .s-ico-wrap { width: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .s-star { font-size: 13px; color: #9080a8; }
 .s-title { font-size: 12px; font-weight: 600; color: #3a1a2a; }
 .s-sub   { font-size: 10px; color: #b0a0b0; }
-
 .toggle {
   width: 36px; height: 20px; border-radius: 10px;
   border: none; cursor: pointer; position: relative;
@@ -416,9 +525,7 @@ function openVaultFolder() {
   transition: left 0.2s;
 }
 .toggle.on .knob { left: 18px; }
-
 .divider { height: 1px; background: #f0e8f4; margin: 2px 0; }
-
 .voice-block { padding: 2px 0 4px; }
 .voice-hd {
   display: flex; align-items: center; gap: 8px;
@@ -443,7 +550,6 @@ function openVaultFolder() {
   color: #fff; cursor: pointer;
 }
 .voice-save:disabled { opacity: 0.6; cursor: wait; }
-
 .nav-row {
   display: flex; align-items: center; gap: 10px;
   padding: 5px 0; background: none; border: none;
@@ -452,14 +558,12 @@ function openVaultFolder() {
 .nav-row:hover .s-title { color: #c87090; }
 .s-left2 { flex: 1; }
 .arrow { font-size: 16px; color: #c8b0c8; font-weight: 300; }
-
 .info-row { display: flex; justify-content: space-between; align-items: center; padding: 1px 0; }
 .info-label { font-size: 10px; color: #b0a0b0; }
 .info-val   { font-size: 10px; font-weight: 600; color: #5a3050; }
 .info-val.mono { font-family: monospace; }
 .info-val.ok  { color: #38885a; }
 .info-val.err { color: #c04040; }
-
 .clear-btn {
   align-self: center; font-size: 10px; color: #c06080;
   background: #fff0f5; border: 1.5px solid #f0c8d8;
@@ -470,258 +574,97 @@ function openVaultFolder() {
 .version { text-align: center; font-size: 8.5px; color: #c8b8c8; margin-top: 2px; }
 </style>
 
-<!-- 弹窗样式（非 scoped，因为 Teleport 出了组件范围） -->
 <style>
 .guide-mask {
-  position: fixed;
-  inset: 0;
+  position: fixed; inset: 0;
   background: rgba(40, 10, 30, 0.38);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center;
   z-index: 9999;
 }
-.guide-card {
-  width: 300px;
-  max-height: 80vh;
-  background: #fff;
-  border-radius: 18px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.guide-hd {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px 10px;
-  border-bottom: 1px solid #f0e8f4;
-  flex-shrink: 0;
-}
+.guide-card { width: 600px; max-height: 80vh; background: #fff; border-radius: 18px; box-shadow: 0 12px 40px rgba(0,0,0,0.18); overflow: hidden; display: flex; flex-direction: column; }
+.guide-hd { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px; border-bottom: 1px solid #f0e8f4; flex-shrink: 0; }
 .guide-title { font-size: 14px; font-weight: 700; color: #3a1a2a; }
-.guide-close {
-  width: 26px; height: 26px; border-radius: 50%;
-  border: none; background: #f5f0f5; color: #a09090;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: background 0.15s;
-}
+.guide-close { width: 26px; height: 26px; border-radius: 50%; border: none; background: #f5f0f5; color: #a09090; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s; }
 .guide-close:hover { background: #ece0ec; color: #604050; }
-.guide-body {
-  padding: 12px 16px 16px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(200,150,180,0.3) transparent;
-}
+.guide-body { padding: 12px 16px 16px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(200,150,180,0.3) transparent; }
 .guide-body section { margin-bottom: 14px; }
 .guide-body h4 { font-size: 12px; font-weight: 700; color: #5a2040; margin-bottom: 5px; }
-.guide-body p  { font-size: 11px; color: #6a5060; line-height: 1.7; margin-bottom: 3px; }
+.guide-body p { font-size: 11px; color: #6a5060; line-height: 1.7; margin-bottom: 3px; }
 .guide-body em { color: #c87090; font-style: normal; font-weight: 600; }
 .guide-body b  { color: #3a1a2a; }
-
 .guide-enter-active, .guide-leave-active { transition: opacity 0.22s, transform 0.22s; }
 .guide-enter-from, .guide-leave-to { opacity: 0; transform: scale(0.94); }
 
-/* ── 历史记录弹窗扩展 ── */
-.history-card { width: 340px; max-height: 85vh; }
-.history-body {
-  padding: 10px 14px 14px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(200,150,180,0.3) transparent;
-}
-.hist-empty {
-  text-align: center;
-  font-size: 12px;
-  color: #b0a0b0;
-  padding: 24px 0;
-}
+/* 历史记录 */
+.history-card { width: 680px; max-height: 85vh; }
+.history-body { padding: 10px 14px 14px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(200,150,180,0.3) transparent; }
+.hist-empty { text-align: center; font-size: 12px; color: #b0a0b0; padding: 24px 0; }
 .hist-group { margin-bottom: 18px; }
-.hist-day-label {
-  font-size: 10px;
-  font-weight: 700;
-  color: #c8a0c0;
-  text-align: center;
-  margin-bottom: 8px;
-  letter-spacing: 0.05em;
-}
-.hist-msg {
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 6px;
-}
-.hist-msg.user  { align-items: flex-end; }
+.hist-day-label { font-size: 10px; font-weight: 700; color: #c8a0c0; text-align: center; margin-bottom: 8px; letter-spacing: 0.05em; }
+.hist-msg { display: flex; flex-direction: column; margin-bottom: 6px; }
+.hist-msg.user { align-items: flex-end; }
 .hist-msg.assistant { align-items: flex-start; }
-.hist-bubble {
-  max-width: 80%;
-  padding: 6px 10px;
-  border-radius: 12px;
-  font-size: 11px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-.hist-msg.user .hist-bubble {
-  background: linear-gradient(135deg, #f87090, #e060a0);
-  color: #fff;
-  border-bottom-right-radius: 4px;
-}
-.hist-msg.assistant .hist-bubble {
-  background: #f8f0f8;
-  color: #4a2040;
-  border-bottom-left-radius: 4px;
-}
-.hist-time {
-  font-size: 9px;
-  color: #c0b0c0;
-  margin-top: 2px;
-  padding: 0 2px;
-}
+.hist-bubble { max-width: 80%; padding: 6px 10px; border-radius: 12px; font-size: 11px; line-height: 1.6; word-break: break-word; }
+.hist-msg.user .hist-bubble { background: linear-gradient(135deg, #f87090, #e060a0); color: #fff; border-bottom-right-radius: 4px; }
+.hist-msg.assistant .hist-bubble { background: #f8f0f8; color: #4a2040; border-bottom-left-radius: 4px; }
+.hist-time { font-size: 9px; color: #c0b0c0; margin-top: 2px; padding: 0 2px; }
 
-/* ── Vault 弹窗 ── */
-.vault-box {
-  max-width: 340px;
-  padding: 18px 20px 16px;
-}
-.vault-stats {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0;
-  background: #fdf4f9;
-  border-radius: 12px;
-  padding: 12px 0;
-  margin: 12px 0;
-}
-.vault-stat-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-.vault-stat-num {
-  font-size: 20px;
-  font-weight: 700;
-  color: #c87090;
-  line-height: 1;
-}
-.vault-stat-label {
-  font-size: 9px;
-  color: #b0a0b0;
-}
-.vault-stat-div {
-  width: 1px;
-  height: 32px;
-  background: #f0d8e8;
-}
-.vault-no-stats {
-  text-align: center;
-  font-size: 11px;
-  color: #c0b0c0;
-  padding: 12px 0;
-}
-.vault-tree {
-  background: #f8f0fa;
-  border-radius: 10px;
-  padding: 10px 14px;
-  margin-bottom: 10px;
-}
-.vault-tree-title {
-  font-size: 10px;
-  font-weight: 700;
-  color: #a080a8;
-  margin-bottom: 6px;
-  letter-spacing: 0.04em;
-}
-.vault-tree-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.vault-tree-arrow {
-  font-size: 10px;
-  color: #d0b8d8;
-  text-align: center;
-  margin: 1px 0 1px 4px;
-}
-.vault-lvl {
-  font-size: 9px;
-  font-weight: 700;
-  border-radius: 4px;
-  padding: 1px 5px;
-  min-width: 22px;
-  text-align: center;
-}
+/* Vault */
+.vault-box { max-width: 680px; padding: 18px 20px 16px; }
+.vault-stats { display: flex; align-items: center; justify-content: center; gap: 0; background: #fdf4f9; border-radius: 12px; padding: 12px 0; margin: 12px 0; }
+.vault-stat-item { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.vault-stat-num { font-size: 20px; font-weight: 700; color: #c87090; line-height: 1; }
+.vault-stat-label { font-size: 9px; color: #b0a0b0; }
+.vault-stat-div { width: 1px; height: 32px; background: #f0d8e8; }
+.vault-no-stats { text-align: center; font-size: 11px; color: #c0b0c0; padding: 12px 0; }
+.vault-tree { background: #f8f0fa; border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; }
+.vault-tree-title { font-size: 10px; font-weight: 700; color: #a080a8; margin-bottom: 6px; letter-spacing: 0.04em; }
+.vault-tree-row { display: flex; align-items: center; gap: 8px; }
+.vault-tree-arrow { font-size: 10px; color: #d0b8d8; text-align: center; margin: 1px 0 1px 4px; }
+.vault-lvl { font-size: 9px; font-weight: 700; border-radius: 4px; padding: 1px 5px; min-width: 22px; text-align: center; }
 .vault-lvl.l0 { background: #ffe8f0; color: #e06080; }
 .vault-lvl.l1 { background: #e8f8e8; color: #40a040; }
 .vault-lvl.l2 { background: #e8f0ff; color: #4060c0; }
 .vault-lvl.l3 { background: #fff0d8; color: #b07020; }
-.vault-lvl-desc {
-  font-size: 10px;
-  color: #7a5a7a;
-}
-.vault-path {
-  font-size: 9px;
-  color: #b0a0b0;
-  word-break: break-all;
-  margin-bottom: 10px;
-  padding: 0 2px;
-}
+.vault-lvl-desc { font-size: 10px; color: #7a5a7a; }
+.vault-path { font-size: 9px; color: #b0a0b0; word-break: break-all; margin-bottom: 10px; padding: 0 2px; }
 .vault-path-label { color: #9080a0; font-weight: 600; }
-.vault-path-val   { font-family: monospace; color: #8070a0; }
-.vault-sync-msg {
-  font-size: 10px;
-  color: #609050;
-  background: #f0faf0;
-  border-radius: 6px;
-  padding: 4px 8px;
-  margin-bottom: 8px;
-}
-.vault-actions {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.vault-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  border-radius: 10px;
-  padding: 7px 0;
-  cursor: pointer;
-  border: 1.5px solid #e8d0e0;
-  background: #fff;
-  color: #7a5a7a;
-  transition: background 0.12s;
-}
+.vault-path-val { font-family: monospace; color: #8070a0; }
+.vault-sync-msg { font-size: 10px; color: #609050; background: #f0faf0; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
+.vault-actions { display: flex; gap: 8px; margin-bottom: 10px; }
+.vault-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 11px; font-weight: 600; border-radius: 10px; padding: 7px 0; cursor: pointer; border: 1.5px solid #e8d0e0; background: #fff; color: #7a5a7a; transition: background 0.12s; }
 .vault-btn:hover { background: #fdf0f8; }
-.vault-btn.primary {
-  background: linear-gradient(135deg, #f87090, #e060a0);
-  color: #fff;
-  border-color: transparent;
-}
+.vault-btn.primary { background: linear-gradient(135deg, #f87090, #e060a0); color: #fff; border-color: transparent; }
 .vault-btn.primary:hover { filter: brightness(1.05); }
 .vault-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.vault-tip {
-  font-size: 10px;
-  color: #b0a0b0;
-  text-align: center;
-}
-.vault-link {
-  color: #c87090;
-  text-decoration: underline;
-}
-.spinning {
-  animation: spin 1s linear infinite;
-}
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
+.vault-tip { font-size: 10px; color: #b0a0b0; text-align: center; }
+.vault-link { color: #c87090; text-decoration: underline; }
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* 工具管理弹窗 */
+.tool-card { width: 680px; max-height: 85vh; }
+.tool-body { padding: 10px 14px 14px; }
+.tool-empty { text-align: center; font-size: 12px; color: #b0a0b0; padding: 24px 0; }
+.tool-cat { margin-bottom: 14px; }
+.tool-cat:last-child { margin-bottom: 0; }
+.tool-cat-label { font-size: 10px; font-weight: 700; color: #c8a0c0; margin-bottom: 6px; letter-spacing: 0.04em; }
+.tool-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f5f0f8; }
+.tool-item:last-child { border-bottom: none; }
+.tool-info { flex: 1; min-width: 0; }
+.tool-name { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; flex-wrap: wrap; }
+.tool-name code { font-size: 10px; font-weight: 700; color: #5a3050; background: #f5f0f8; padding: 1px 4px; border-radius: 3px; }
+.tool-badge { font-size: 8px; font-weight: 700; border-radius: 3px; padding: 1px 4px; }
+.tool-badge.lvl1 { background: #e8f8e8; color: #308840; }
+.tool-badge.lvl2 { background: #e0ecff; color: #4060c0; }
+.tool-badge.lvl3 { background: #fff0e0; color: #c07020; }
+.tool-badge.lvl4 { background: #ffe8e8; color: #c04040; }
+.tool-desc { font-size: 9px; color: #b0a0b0; line-height: 1.4; }
+.tool-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; align-items: flex-end; }
+.tool-tgl-label { display: flex; align-items: center; gap: 4px; }
+.tool-tgl-label span { font-size: 8px; color: #b0a0b0; }
+.tool-tgl { width: 28px !important; height: 16px !important; }
+.tool-tgl .knob { width: 12px !important; height: 12px !important; }
+.tool-tgl.on .knob { left: 14px !important; }
 </style>

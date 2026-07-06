@@ -7,6 +7,8 @@
 //   description()        → 工具说明（注入 system prompt）
 //   parameters_schema()  → JSON 参数 schema（告诉模型传什么参数）
 //   permission_level()   → 权限等级 L0-L3
+//   category()           → 工具分类（用于前端分组显示）
+//   enabled_by_default() → 默认是否开启
 //   execute()            → 实际执行
 //
 // 工具调用格式（XML-JSON 混合，兼容 DeepSeek/Ollama 等非 native 模型）：
@@ -51,6 +53,35 @@ impl ToolPermission {
     }
     pub fn needs_confirmation(&self) -> bool {
         matches!(self, Self::L2 | Self::L3)
+    }
+}
+
+// ─── 工具分类 ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolCategory {
+    File,      // 文件操作：read/write/search
+    Web,       // 网络：search/fetch/download
+    System,    // 系统：shell/process/window
+    Memory,    // 记忆：memory_recall/note
+    Git,       // Git：status/commit
+    Media,     // 媒体：screenshot/image/audio
+    Code,      // 代码：grep/definition/run
+    Clipboard, // 剪贴板
+}
+
+impl ToolCategory {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::File     => "文件",
+            Self::Web      => "网络",
+            Self::System   => "系统",
+            Self::Memory   => "记忆",
+            Self::Git      => "Git",
+            Self::Media    => "媒体",
+            Self::Code     => "代码",
+            Self::Clipboard => "剪贴板",
+        }
     }
 }
 
@@ -120,6 +151,9 @@ pub struct ToolSpec {
     /// 简化的参数说明（key: type - description）
     pub params:      Vec<ToolParam>,
     pub permission:  ToolPermission,
+    pub category:    ToolCategory,
+    /// 默认是否开启（用户可在设置中开关）
+    pub enabled_by_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,12 +226,24 @@ pub trait Tool: Send + Sync {
     fn params(&self) -> Vec<ToolParam>;
     fn permission_level(&self) -> ToolPermission;
 
+    /// 工具分类（用于前端分组显示）
+    fn category(&self) -> ToolCategory {
+        ToolCategory::System
+    }
+
+    /// 默认是否开启（用户可在设置中关闭）
+    fn enabled_by_default(&self) -> bool {
+        true
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name:        self.name().to_string(),
             description: self.description().to_string(),
             params:      self.params(),
             permission:  self.permission_level(),
+            category:    self.category(),
+            enabled_by_default: self.enabled_by_default(),
         }
     }
 

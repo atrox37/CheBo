@@ -75,3 +75,6 @@ temp/
 # OS
 Thumbs.db
 Desktop.ini
+
+# Cargo
+.cargo-target/

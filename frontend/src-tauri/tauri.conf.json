@@ -14,14 +14,16 @@
       {
         "label": "main",
         "title": "Chebo AI 桌面宠物",
-        "width": 570,
-        "height": 340,
+        "minWidth": 320,
+        "minHeight": 285,
+        "width": 320,
+        "height": 285,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
-        "skipTaskbar": false,
+        "skipTaskbar": true,
         "shadow": false,
         "center": true
       }

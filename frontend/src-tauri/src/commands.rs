@@ -593,6 +593,81 @@ pub fn list_known_models() -> Vec<provider_registry::ModelCapabilities> {
     provider_registry::all_known()
 }
 
+// ─── 工具配置管理 ──────────────────────────────────────────────────────────────
+
+/// 获取所有工具的 spec 和配置状态（供设置页显示）
+#[derive(Serialize)]
+pub struct ToolConfigStatusDto {
+    pub name:           String,
+    pub description:    String,
+    pub permission:     u8,
+    pub permission_label: String,
+    pub category:       String,
+    pub enabled_by_default: bool,
+    pub enabled:        i64,
+    pub auto_approve:   i64,
+    pub daily_limit:    i64,
+}
+
+#[tauri::command]
+pub async fn get_tool_configs(state: State<'_, AppState>) -> CmdResult<Vec<ToolConfigStatusDto>> {
+    let specs = state.tool_registry.all_specs();
+    let configs = db::get_all_tool_configs(&state.pool).await.map_err(e)?;
+
+    Ok(specs.iter().map(|spec| {
+        let cfg = configs.iter().find(|c| c.tool_name == spec.name);
+        ToolConfigStatusDto {
+            name:              spec.name.clone(),
+            description:       spec.description.clone(),
+            permission:        spec.permission as u8 + 1, // L0=0→1, L1=1→2, etc.
+            permission_label:  spec.permission.label().to_string(),
+            category:          spec.category.label().to_string(),
+            enabled_by_default: spec.enabled_by_default,
+            enabled:           cfg.map(|c| c.enabled).unwrap_or(if spec.enabled_by_default { 1 } else { 0 }),
+            auto_approve:      cfg.map(|c| c.auto_approve).unwrap_or(0),
+            daily_limit:       cfg.map(|c| c.daily_limit).unwrap_or(0),
+        }
+    }).collect())
+}
+
+#[derive(Deserialize)]
+pub struct UpdateToolConfigPayload {
+    pub tool_name:    String,
+    pub enabled:      Option<i64>,
+    pub auto_approve: Option<i64>,
+    pub daily_limit:  Option<i64>,
+}
+
+/// 更新单个工具配置
+#[tauri::command]
+pub async fn update_tool_config(
+    state:   State<'_, AppState>,
+    payload: UpdateToolConfigPayload,
+) -> CmdResult<()> {
+    // 读取当前配置
+    let current = db::get_tool_config(&state.pool, &payload.tool_name)
+        .await
+        .map_err(e)?
+        .unwrap_or(db::ToolConfigEntry {
+            tool_name:    payload.tool_name.clone(),
+            enabled:      1,
+            auto_approve: 0,
+            daily_limit:  0,
+        });
+
+    db::upsert_tool_config(
+        &state.pool,
+        &payload.tool_name,
+        payload.enabled.unwrap_or(current.enabled),
+        payload.auto_approve.unwrap_or(current.auto_approve),
+        payload.daily_limit.unwrap_or(current.daily_limit),
+    )
+    .await
+    .map_err(e)?;
+
+    Ok(())
+}
+
 // ─── 拖拽（原生无边框窗口） ───────────────────────────────────────────────────
 
 #[tauri::command]

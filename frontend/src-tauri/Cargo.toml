@@ -42,6 +42,9 @@ async-trait  = "0.1"                             # Tool trait 异步方法
 screenshots  = { version = "0.8", features = [] } # P2: 全屏截图工具
 base64       = "0.22"                            # P2: 截图 base64 编码
 lazy_static  = "1.5"                             # provider_registry: 静态注册表
+walkdir      = "2"                               # search_files 递归遍历
+wildmatch    = "2"                               # search_files 通配符匹配
+html2text    = "0.6"                             # web_fetch HTML 转纯文本
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys  = { version = "0.52", features = [  # P1/P2: Windows API
