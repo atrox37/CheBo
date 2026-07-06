@@ -79,7 +79,7 @@ pnpm tauri build
 
 ## 关于角色显示
 
-Live2D 模型尚未接入，当前使用静态占位图（`/chebo-placeholder.png`）。等人设资源就绪后可替换为 Live2D 动画。
+当前使用 CrystalGirl PNGTuber 立绘（静态 PNG），支持情绪映射和口型/眨眼。Live2D 动画尚未接入。
 
 ---
 
@@ -89,6 +89,9 @@ Live2D 模型尚未接入，当前使用静态占位图（`/chebo-placeholder.pn
 |--------|---------|------|
 | **DeepSeek**（默认） | [platform.deepseek.com](https://platform.deepseek.com/) | 国内速度快，推荐 |
 | OpenAI | [platform.openai.com](https://platform.openai.com/) | 需配置代理 |
+| Anthropic | [console.anthropic.com](https://console.anthropic.com/) | Claude 系列 |
+| Google | [ai.google.dev](https://ai.google.dev/) | Gemini 系列 |
+| OpenRouter | [openrouter.ai](https://openrouter.ai/) | 一个 Key 访问所有模型 |
 | Ollama | [ollama.com](https://ollama.com/) | 本地运行，可完全离线推理 |
 
 在 `.env` 中修改 `LLM_PROVIDER` 即可切换，无需改代码。
@@ -162,19 +165,19 @@ Win10 需安装 WebView2 运行时
 ## 项目结构
 
 ```
-erii-ai-desktop-pet/          # 仓库目录（历史命名，产品品牌为 Chebo）
+erii-ai-desktop-pet/          # 仓库目录
 ├── frontend/                 # Tauri + Vue 3 前端
 │   ├── src/                  # Vue 源码
-│   └── src-tauri/            # Rust 后端（Agent / 记忆 / 工具）
-├── docs/                     # 文档
+│   └── src-tauri/            # Rust 后端（Agent / 记忆 / 工具 / 40+ 命令）
+├── docs/                     # 产品文档
 ├── README.md                 # 项目说明
-├── ARCHITECTURE.md           # 架构文档
-└── PROJECT_SUMMARY.md        # 技术总结
+├── PROJECT_SUMMARY.md        # 完整技术总结
+└── QUICKSTART.md             # 本文件
 ```
 
-更完整的架构说明见 [ARCHITECTURE.md](../ARCHITECTURE.md) 与 [PROJECT_SUMMARY.md](../PROJECT_SUMMARY.md)。
+完整架构说明见 [PROJECT_SUMMARY.md](./PROJECT_SUMMARY.md)。
 
 ---
 
 **产品名称**：Chebo  
-**最后更新**：2026-07
+**最后更新**：2026-07-06
