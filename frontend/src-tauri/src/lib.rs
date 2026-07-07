@@ -7,8 +7,9 @@
 
 mod agent;
 mod character;
-mod chat_router;
+mod chat_intent;
 mod commands;
+mod context_builder;
 mod db;
 mod event_bus;
 mod intent_router;
@@ -16,6 +17,7 @@ mod lib_state;
 mod llm;
 mod local_embed;
 mod memory;
+mod memory_controller;
 mod memory_tree;
 mod memory_vector;
 mod perception;
@@ -30,6 +32,7 @@ mod tools;
 mod tray;
 mod vault;
 mod voice;
+mod working_memory;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;

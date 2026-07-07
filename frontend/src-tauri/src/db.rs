@@ -598,6 +598,48 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    // ── memory_candidates 表（候选记忆，供前端展示"Chebo 发现了这些信息"）────
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS memory_candidates (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            content     TEXT    NOT NULL,
+            memory_type TEXT    NOT NULL,
+            scope       TEXT    NOT NULL DEFAULT 'global',
+            score       REAL    NOT NULL DEFAULT 0.0,
+            status      TEXT    NOT NULL DEFAULT 'candidate',
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // ── Working Memory 表（当前项目/话题/目标/决策/待办）───────────────────
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS working_memory (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope               TEXT    NOT NULL DEFAULT 'global',
+            current_project     TEXT    NOT NULL DEFAULT '',
+            current_topic       TEXT    NOT NULL DEFAULT '',
+            user_goal           TEXT,
+            confirmed_decisions TEXT    NOT NULL DEFAULT '[]',
+            open_questions      TEXT    NOT NULL DEFAULT '[]',
+            next_actions        TEXT    NOT NULL DEFAULT '[]',
+            confidence          REAL    NOT NULL DEFAULT 0.8,
+            status              TEXT    NOT NULL DEFAULT 'active',
+            created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_working_memory_scope
+         ON working_memory(scope)",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 

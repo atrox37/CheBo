@@ -12,13 +12,16 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::agent::AgentState;
 use crate::character::build_system_prompt;
-use crate::chat_router;
+use crate::chat_intent;
 use crate::db::{self, Message, PetStatus, StatusPatch};
 use crate::event_bus::AgentEvent;
 use crate::lib_state::AppState;
 use crate::llm::{self, AgentStreamOutcome, LlmConfig, LlmMessage};
+use crate::context_builder;
 use crate::memory;
+use crate::memory_controller;
 use crate::provider_registry;
+use crate::working_memory;
 use crate::task::{AgentTask, TaskSummaryDto};
 use crate::tool_dispatcher::{self, ToolDispatcher};
 use crate::tools::{self, PendingToolCall, ToolLevel, ToolResult};
@@ -85,8 +88,31 @@ pub async fn send_message(
     let deep_think_flag = deep_think;
     let images_empty = images.is_empty();
 
-    // 多步任务：在聊天中自动识别，后台执行（无需单独「长期任务」页）
-    if images_empty && chat_router::should_run_agent_task(&content, deep_think_flag) {
+    // ── ChatIntent 分类 ────────────────────────────────────────────────────────
+    let intent_input = chat_intent::IntentInput {
+        content: content.clone(),
+        deep_think: deep_think_flag,
+        assistant_mode: assistant_mode_flag,
+        has_images: !images_empty,
+    };
+    let intent_context = chat_intent::IntentContext {
+        recent_messages_brief: vec![], // P2: 接 context_builder
+        working_memory_brief: None,    // P3: 接 working_memory
+    };
+    let intent_decision = chat_intent::decide(intent_input, intent_context, &llm_cfg).await;
+
+    log::info!(
+        "send_message: intent={:?}, confidence={}, recall={:?}, memory={:?}, response={:?}, task={}",
+        intent_decision.intent,
+        intent_decision.confidence,
+        intent_decision.recall_strategy,
+        intent_decision.memory_action,
+        intent_decision.response_mode,
+        intent_decision.should_start_task,
+    );
+
+    // 多步任务：在聊天中自动识别，后台执行
+    if images_empty && chat_intent::should_run_agent_task(&content, deep_think_flag) {
         let tm    = state.task_manager.clone();
         let goal  = content.clone();
         let sid   = Some(session_id.clone());
@@ -214,7 +240,16 @@ pub async fn send_message(
             last_interaction_at: None, updated_at: None,
         });
 
-        let mem_ctx    = memory::build_rich_context_string(&pool, &session_id).await;
+        // 使用 ContextPack 替代原来的 build_rich_context_string
+        let context_pack = context_builder::build_context_pack(
+            &pool,
+            &session_id,
+            &content,
+            &intent_decision,
+            &llm_cfg_ref,
+        ).await;
+        let mem_ctx = context_pack.to_prompt_section();
+
         let tool_block = tool_registry.tools_prompt_block_for(&content, &[]);
 
         let system = if deep_think_flag {
@@ -222,7 +257,7 @@ pub async fn send_message(
                 "{}\n\n{}\n\n{}\n\n{}",
                 build_system_prompt(&status, !assistant_mode),
                 mem_ctx,
-                chat_router::DEEP_THINK_SYSTEM_ADDITION,
+                chat_intent::DEEP_THINK_SYSTEM_ADDITION,
                 tool_block
             )
         } else {
@@ -235,7 +270,7 @@ pub async fn send_message(
         };
 
         let max_tool_turns = if deep_think_flag {
-            chat_router::DEEP_THINK_MAX_TOOL_TURNS
+            chat_intent::DEEP_THINK_MAX_TOOL_TURNS
         } else {
             tool_dispatcher::MAX_TOOL_TURNS
         };
@@ -400,11 +435,46 @@ pub async fn send_message(
             session_id: session_id.clone(),
         });
 
+        // 异步后处理：摘要 + 工作记忆 + 记忆控制器
         let pool3 = pool.clone();
         let cfg3  = llm_cfg.clone();
         let sid3  = session_id.clone();
+        let pool_wm = pool.clone();
+        let cfg_wm  = llm_cfg.clone();
+        let sid_wm  = session_id.clone();
+        let decision_wm = intent_decision.clone();
+        let pool_mc = pool.clone();
+        let cfg_mc  = llm_cfg.clone();
+        let content_mc = content.clone();
+        let sid_mc  = session_id.clone();
+        let decision_mc = intent_decision.clone();
         tauri::async_runtime::spawn(async move {
+            // 摘要（每10条）
             memory::maybe_summarize(&pool3, &cfg3, &sid3).await;
+
+            // Working Memory 更新（仅在必要场景触发）
+            if working_memory::should_update(&decision_wm, &content) {
+                let recent = db::get_messages(&pool_wm, &sid_wm, 6).await.unwrap_or_default();
+                if let Err(e) = working_memory::update_from_conversation(
+                    &pool_wm, &cfg_wm,
+                    &working_memory::default_scope(),
+                    &recent,
+                    &decision_wm,
+                ).await {
+                    log::warn!("working_memory update failed: {e}");
+                }
+            }
+
+            // Memory Controller：提取候选记忆、评分、冲突检测、持久化
+            memory_controller::process_event(
+                &pool_mc,
+                &cfg_mc,
+                memory_controller::MemoryEvent::UserMessage {
+                    content: content_mc,
+                    session_id: sid_mc,
+                    decision: decision_mc,
+                },
+            ).await;
         });
 
         agent.set_idle(&app);
