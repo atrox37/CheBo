@@ -22,6 +22,7 @@ mod memory_tree;
 mod memory_vector;
 mod perception;
 mod pet;
+mod planner;
 mod provider_registry;
 mod sandbox;
 mod task;

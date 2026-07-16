@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Volume2, Pin, Palette, Globe, HelpCircle, X, MessageSquare, Database, FolderOpen, RefreshCw, Mic, Wrench } from 'lucide-vue-next'
 import * as tauriService from '@/services/tauriService'
 import { useVoiceStore } from '@/utils/speechTiming'

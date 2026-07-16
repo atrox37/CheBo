@@ -385,12 +385,27 @@ pub async fn stream_agent_turn(
         }
     };
 
-    let mut stream       = resp.bytes_stream();
-    let mut full_text    = String::new();
-    let mut line_buf     = String::new();
-    let mut ui_open      = true;
-    let mut talking_set  = false;
-    let mut stream_reset = false;
+    let mut stream          = resp.bytes_stream();
+    let mut full_text       = String::new();
+    let mut line_buf        = String::new();
+    let mut ui_open         = true;
+    let mut talking_set     = false;
+    let mut stream_reset    = false;
+    let mut current_section = String::new(); // "thought" | "action" | "final" | ""
+
+    /// 检测当前 full_text 进入了哪个章节
+    fn detect_section(text: &str) -> &str {
+        // 从末尾向前搜索最近的章节标记（按优先级）
+        if text.contains("\nFinal Answer：") || text.starts_with("Final Answer：") {
+            "final"
+        } else if text.contains("\nAction：") || text.starts_with("Action：") {
+            "action"
+        } else if text.contains("\nThought：") || text.starts_with("Thought：") {
+            "thought"
+        } else {
+            ""
+        }
+    }
 
     while let Some(chunk_result) = stream.next().await {
         if cancel.load(Ordering::Relaxed) {
@@ -433,6 +448,15 @@ pub async fn stream_agent_turn(
                     }
 
                     full_text.push_str(content);
+
+                    // ── 章节切换检测 ────────────────────────────────────────
+                    let new_section = detect_section(&full_text);
+                    if new_section != current_section.as_str() && !new_section.is_empty() {
+                        current_section = new_section.to_string();
+                        let _ = app.emit("assistant_section", serde_json::json!({
+                            "section": current_section,
+                        }));
+                    }
 
                     if full_text.contains(TOOL_CALL_MARKER) {
                         if ui_open {

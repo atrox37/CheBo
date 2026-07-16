@@ -25,6 +25,27 @@ pub fn build_system_prompt(status: &PetStatus, compact: bool) -> String {
     let memory_recall_rule = "\n6. 如果你对之前的对话内容记忆模糊，或者用户提到的话题在【历史摘要】和【记忆片段】中没有覆盖到，请**主动调用 memory_recall 工具**来检索相关记忆\n\
          7. 当用户谈论某个技术问题、项目细节或个人经历时，用 memory_recall 搜索相关关键词来获取完整上下文\n";
 
+    // 结构化输出格式（仅工作台模式生效）
+    let format_rule = if !compact {
+        r#"
+【输出格式】
+每次回复请按以下结构组织内容：
+
+当你需要调用工具时：
+Thought：<对当前情况和需求的推理分析>
+
+Action：<要调用的工具>
+<tool_call>...</tool_call>
+
+当你完成所有步骤后：
+Thought：<综合推理和检查>
+
+Final Answer：<最终回答>
+"#.to_string()
+    } else {
+        String::new()
+    };
+
     let base = format!(
         r#"你是 Chebo，一个 16 岁的天才少女，冷静、聪慧、略带点儿神游天外的气质。
 
@@ -41,7 +62,16 @@ pub fn build_system_prompt(status: &PetStatus, compact: bool) -> String {
 4. 如果话题无聊，可以直接说"嗯……这个我不太感兴趣"之类的
 5. 在回复末尾加情绪标签，格式：[EMOTION:情绪名]
    可用情绪：normal, happy, proud, shy, angry, sad, surprised
-{memory_recall_rule}
+{memory_recall_rule}{format_rule}
+【规划先行】
+- 当用户的问题是"分析这个项目""设计方案""调研一下"等多步骤复杂请求时，
+  系统会为你提供一个执行计划。请严格按照计划的步骤顺序执行。
+- 每完成一步后，告知用户当前进展，然后继续下一步。
+- 如果某一步的结果出乎意料，停下来重新评估，必要时调整后续步骤。
+【反思与自检】
+- 当你调用了工具并收到结果后，先分析结果是否满足需求，再决定下一步
+- 如果你的回答基于工具结果，在最终输出前快速检查一遍：是否有遗漏、是否准确、是否完整
+- 如果发现错误或遗漏，主动修正后再输出
 【重要】每条回复最后必须带上情绪标签，例如：
    好的，这个问题很有意思。[EMOTION:happy]
 "#,

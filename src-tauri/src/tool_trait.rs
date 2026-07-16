@@ -107,6 +107,9 @@ pub struct ToolCallResult {
     /// 输出内容（会被裁剪到 MAX_TOOL_OUTPUT 字符）
     pub output:      String,
     pub permission:  ToolPermission,
+    /// 结构化数据（可选，用于前端直接展示表格/列表等）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured:  Option<serde_json::Value>,
 }
 
 impl ToolCallResult {
@@ -118,7 +121,37 @@ impl ToolCallResult {
         } else {
             output
         };
-        Self { id: id.to_string(), name: name.to_string(), success: true, output, permission: perm }
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            success: true,
+            output,
+            permission: perm,
+            structured: None,
+        }
+    }
+
+    /// 带结构化数据的成功结果
+    pub fn ok_structured(
+        id: &str,
+        name: &str,
+        perm: ToolPermission,
+        output: String,
+        structured: serde_json::Value,
+    ) -> Self {
+        let output = if output.len() > Self::MAX_OUTPUT {
+            format!("{}…（输出已截断，原长 {} 字符）", &output[..Self::MAX_OUTPUT], output.len())
+        } else {
+            output
+        };
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            success: true,
+            output,
+            permission: perm,
+            structured: Some(structured),
+        }
     }
 
     pub fn err(id: &str, name: &str, perm: ToolPermission, msg: &str) -> Self {
@@ -128,6 +161,7 @@ impl ToolCallResult {
             success: false,
             output: format!("工具执行失败: {msg}"),
             permission: perm,
+            structured: None,
         }
     }
 

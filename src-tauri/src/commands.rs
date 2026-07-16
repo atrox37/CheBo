@@ -20,6 +20,7 @@ use crate::llm::{self, AgentStreamOutcome, LlmConfig, LlmMessage};
 use crate::context_builder;
 use crate::memory;
 use crate::memory_controller;
+use crate::planner;
 use crate::provider_registry;
 use crate::working_memory;
 use crate::task::{AgentTask, TaskSummaryDto};
@@ -286,11 +287,34 @@ pub async fn send_message(
         messages.extend(history);
         messages.push(LlmMessage::user(&user_text));
 
+        // ── Phase B: 复杂请求预规划 ─────────────────────────────────────
+        if planner::should_plan(intent_decision.intent) {
+            if let Some(plan) = planner::quick_plan(&content, intent_decision.intent, &llm_cfg).await {
+                // 在 system prompt 与历史消息之间插入计划
+                // 让模型在第 1 轮工具循环前就知道执行路径
+                let plan_msg = format!(
+                    "【执行计划（请按此顺序执行）】\n\
+                     以下是为当前请求制定的执行计划，\n\
+                     请按步骤顺序执行，每完成一步后继续下一步。\n\
+                     如果某一步结果不符合预期，重新调整后再继续。\n\n\
+                     {plan}"
+                );
+                // 插入到 history 之后、user 消息之前
+                let last_user = messages.pop();
+                messages.push(LlmMessage::system(&plan_msg));
+                if let Some(msg) = last_user {
+                    messages.push(msg);
+                }
+                log::info!("计划已注入: intent={:?}", intent_decision.intent);
+            }
+        }
+
         // ── 2. 工具调用循环（最多 MAX_TOOL_TURNS 轮，真流式） ───────────────
-        let mut final_text    = String::new();
-        let mut final_emotion = "normal".to_string();
-        let mut used_tools    = false;
-        let mut streamed_done = false;
+        let mut final_text        = String::new();
+        let mut final_emotion     = "normal".to_string();
+        let mut used_tools        = false;
+        let mut streamed_done     = false;
+        let mut reflection_done   = false;
 
         'tool_loop: for turn in 0..max_tool_turns {
             if is_cancelled(&cancel) {
@@ -322,6 +346,16 @@ pub async fn send_message(
                     let tool_calls = ToolDispatcher::parse_xml(&raw);
 
                     if tool_calls.is_empty() {
+                        // ── Reflection: 最终输出前自检 ─────────────────────
+                        if used_tools && !reflection_done {
+                            reflection_done = true;
+                            messages.push(LlmMessage::system(
+                                "【最终审查】请检查你上面的回答是否完整、准确。\n\
+                                 如果发现遗漏或错误，请修正后重新输出最终答案。\n\
+                                 如果确认无误，直接输出最终答案。"
+                            ));
+                            continue 'tool_loop;
+                        }
                         let (clean, emo) = crate::character::detect_emotion(&raw);
                         final_text = clean;
                         final_emotion = emo;
@@ -366,6 +400,14 @@ pub async fn send_message(
 
                     let tool_result_text = ToolDispatcher::format_results_as_message(&results);
                     messages.push(LlmMessage::user(&tool_result_text));
+
+                    // ── Reflection: 分析工具结果后再决策 ──────────────────
+                    messages.push(LlmMessage::system(
+                        "【结果分析】请检查以上工具返回的结果。\n\
+                         - 如果信息足够 → 直接给出最终答案，无需再调工具\n\
+                         - 如果信息不足或需要进一步查证 → 继续调用工具\n\
+                         - 如果结果包含错误或异常 → 请指出并考虑替代方案"
+                    ));
 
                     for r in &results {
                         event_bus.publish(AgentEvent::ToolCallFinished {
