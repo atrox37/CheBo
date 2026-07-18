@@ -47,9 +47,8 @@ pub enum MemoryType {
 impl MemoryType {
     pub fn storage_target(&self) -> &str {
         match self {
-            MemoryType::Fact | MemoryType::Preference => "user_profile",
+            MemoryType::Fact | MemoryType::Preference | MemoryType::Episode => "user_profile",
             MemoryType::Project | MemoryType::Decision | MemoryType::Task => "memory_items",
-            MemoryType::Episode => "long_term_memories",
             MemoryType::Procedure | MemoryType::Relationship => "persona_memory",
             MemoryType::TemporaryState => "candidate",
         }
@@ -351,6 +350,10 @@ async fn persist_candidate(
         "user_profile" => {
             if let Some(key) = &candidate.key {
                 db::set_user_profile(pool, key, &candidate.content).await?;
+            } else {
+                // 无 key 的 Episode/自由文本，自动生成 key
+                let key = format!("epi_{}", candidate.content.chars().take(10).collect::<String>());
+                db::set_user_profile(pool, &key, &candidate.content).await?;
             }
         }
         "persona_memory" => {
@@ -364,19 +367,6 @@ async fn persist_candidate(
                 )
                 .await?;
             }
-        }
-        "long_term_memories" => {
-            db::save_memory(pool, "global", &candidate.content, "auto").await?;
-        }
-        "memory_items" => {
-            // memory_items 表暂用 long_term_memories 作为 fallback
-            db::save_memory(
-                pool,
-                "global",
-                &format!("[{}] {}", &scope_label(&candidate.scope), &candidate.content),
-                &format!("{:?}", candidate.memory_type),
-            )
-            .await?;
         }
         _ => {}
     }
@@ -417,12 +407,4 @@ async fn save_candidate(pool: &SqlitePool, candidate: &MemoryCandidate, score: f
     .execute(pool)
     .await?;
     Ok(())
-}
-
-fn scope_label(scope: &str) -> &str {
-    if scope == "global" || scope.is_empty() {
-        ""
-    } else {
-        scope
-    }
 }

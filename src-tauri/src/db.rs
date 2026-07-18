@@ -228,18 +228,6 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
     .await?;
 
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS long_term_memories (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id  TEXT    NOT NULL,
-            content     TEXT    NOT NULL,
-            category    TEXT    DEFAULT 'general',
-            created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
         "CREATE TABLE IF NOT EXISTS config (
             key         TEXT PRIMARY KEY,
             value       TEXT NOT NULL,
@@ -986,64 +974,11 @@ pub async fn consume_inventory(pool: &SqlitePool, item_id: &str) -> Result<bool>
     }
 }
 
-// ─── long_term_memories CRUD ─────────────────────────────────────────────────
+// ─── 用户画像全局读取（替代旧的 long_term_memories 全局查询） ──────────────
 
-pub async fn save_memory(
-    pool: &SqlitePool,
-    session_id: &str,
-    content: &str,
-    category: &str,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO long_term_memories (session_id, content, category) VALUES (?, ?, ?)",
-    )
-    .bind(session_id)
-    .bind(content)
-    .bind(category)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn get_memories(pool: &SqlitePool, session_id: &str, limit: i64) -> Result<Vec<Memory>> {
-    let rows = sqlx::query(
-        "SELECT id, session_id, content, category, created_at
-         FROM long_term_memories WHERE session_id=?
-         ORDER BY id DESC LIMIT ?",
-    )
-    .bind(session_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows_to_memories(&rows))
-}
-
-/// 跨会话读取最近长期记忆（用户「记下来」等指令写入后可在新对话中召回）
-pub async fn get_recent_memories_global(pool: &SqlitePool, limit: i64) -> Result<Vec<Memory>> {
-    let rows = sqlx::query(
-        "SELECT id, session_id, content, category, created_at
-         FROM long_term_memories
-         ORDER BY id DESC LIMIT ?",
-    )
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows_to_memories(&rows))
-}
-
-fn rows_to_memories(rows: &[sqlx::sqlite::SqliteRow]) -> Vec<Memory> {
-    rows
-        .iter()
-        .map(|r| Memory {
-            id:         r.get("id"),
-            session_id: r.get("session_id"),
-            content:    r.get("content"),
-            category:   r.get("category"),
-            created_at: r.get("created_at"),
-        })
-        .collect()
+/// 跨会话读取用户画像全部条目
+pub async fn get_all_profile_entries(pool: &SqlitePool, limit: i64) -> Result<Vec<UserProfileEntry>> {
+    get_user_profile_all(pool).await.map(|v| v.into_iter().take(limit as usize).collect())
 }
 
 // ─── config 键值表 ───────────────────────────────────────────────────────────
@@ -1261,16 +1196,17 @@ pub async fn search_memories_by_keyword(
 ) -> Result<Vec<String>> {
     let pattern = format!("%{keyword}%");
     let rows = sqlx::query(
-        "SELECT content FROM long_term_memories
-         WHERE content LIKE ?
-         ORDER BY id DESC LIMIT ?",
+        "SELECT value FROM user_profile
+         WHERE value LIKE ? OR key LIKE ?
+         ORDER BY updated_at DESC LIMIT ?",
     )
+    .bind(&pattern)
     .bind(&pattern)
     .bind(limit)
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.iter().map(|r| r.get::<String, _>("content")).collect())
+    Ok(rows.iter().map(|r| r.get::<String, _>("value")).collect())
 }
 
 // ─── Batch D: persona_memory CRUD ────────────────────────────────────────────
@@ -1374,27 +1310,6 @@ pub async fn decay_persona_confidence(
 }
 
 /// 长期记忆写入（附置信度过滤）：仅在置信度 >= 0.7 时才写入
-pub async fn save_long_term_memory_guarded(
-    pool:       &SqlitePool,
-    session_id: &str,
-    content:    &str,
-    category:   &str,
-    confidence: f64,
-) -> Result<bool> {
-    if confidence < 0.7 {
-        return Ok(false);
-    }
-    sqlx::query(
-        "INSERT INTO long_term_memories (session_id, content, category) VALUES (?, ?, ?)",
-    )
-    .bind(session_id)
-    .bind(content)
-    .bind(category)
-    .execute(pool)
-    .await?;
-    Ok(true)
-}
-
 // ─── Memory Tree / Vault CRUD ─────────────────────────────────────────────────
 
 /// 保存一条 Vault Chunk 记录

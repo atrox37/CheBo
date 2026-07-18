@@ -71,7 +71,7 @@ pub async fn save_exchange(
 /// 层次：人格记忆 → 用户画像 → 历史对话摘要 → 近期长期记忆
 pub async fn build_rich_context_string(
     pool:       &SqlitePool,
-    session_id: &str,
+    _session_id: &str,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -112,13 +112,7 @@ pub async fn build_rich_context_string(
         }
     }
 
-    // ── 3. 长期记忆（跨会话最近 8 条，含用户「记下来」指令）────────────────
-    if let Ok(mems) = db::get_recent_memories_global(pool, 8).await {
-        if !mems.is_empty() {
-            let lines: Vec<String> = mems.iter().map(|m| format!("  · {}", m.content)).collect();
-            parts.push(format!("【记忆片段】\n{}", lines.join("\n")));
-        }
-    }
+    // ── 3. 长期记忆已合并到用户画像，此处不再单独读取 ─────────────────────
 
     if parts.is_empty() {
         String::new()
@@ -165,17 +159,21 @@ pub async fn get_persona_context(pool: &SqlitePool) -> String {
     }
 }
 
-/// Memory Policy：评估一条记忆是否应写入长期记忆，并在置信度足够时写入
+/// Memory Policy：评估一条记忆是否应写入，并在置信度足够时写入 user_profile
 /// 返回 true 表示已写入，false 表示被置信度策略过滤
 pub async fn maybe_save_long_term(
     pool:       &SqlitePool,
-    session_id: &str,
+    _session_id: &str,
     content:    &str,
-    category:   &str,
+    _category:   &str,
     confidence: f64,
 ) -> bool {
-    match db::save_long_term_memory_guarded(pool, session_id, content, category, confidence).await {
-        Ok(saved) => saved,
+    if confidence < 0.7 {
+        return false;
+    }
+    let key = format!("auto_{}", content.chars().take(10).collect::<String>());
+    match db::set_user_profile(pool, &key, content).await {
+        Ok(()) => true,
         Err(e) => {
             log::warn!("maybe_save_long_term: {e}");
             false
@@ -312,7 +310,7 @@ fn is_about_chebo_role(content: &str) -> bool {
 }
 
 /// 用户明确要求「记下来 / 记住」时写入长期记忆，并同步画像
-async fn extract_remember_requests(pool: &SqlitePool, session_id: &str, content: &str) {
+async fn extract_remember_requests(pool: &SqlitePool, _session_id: &str, content: &str) {
     let remember_triggers = [
         "帮我记住", "请记住", "记下来", "记住", "帮我记", "别忘了",
         "要记得", "记一下", "备忘", "要记住",
@@ -323,11 +321,6 @@ async fn extract_remember_requests(pool: &SqlitePool, session_id: &str, content:
 
     let fact = extract_after_any_trigger(content, &remember_triggers, 120)
         .unwrap_or_else(|| content.to_string());
-
-    let memory_text = format!("用户明确要求记住：{fact}");
-    if let Err(e) = db::save_memory(pool, session_id, &memory_text, "user_note").await {
-        log::warn!("extract_remember_requests save_memory: {e}");
-    }
 
     if is_about_chebo_role(content) {
         update_persona_memory(
@@ -427,14 +420,5 @@ pub async fn maybe_extract_memory(
     extract_persona_hints(pool, user_content).await;
     extract_remember_requests(pool, session_id, user_content).await;
 
-    // 保留旧版简单关键词记忆
-    let triggers = ["我叫", "我的名字", "我住在", "我喜欢", "我讨厌", "我的工作", "我在学"];
-    for trigger in triggers {
-        if user_content.contains(trigger) {
-            let memory_text = format!("用户说：{}", user_content);
-            db::save_memory(pool, session_id, &memory_text, "user_info").await?;
-            break;
-        }
-    }
     Ok(())
 }

@@ -1176,24 +1176,27 @@ pub async fn get_memory_summaries(
     }).collect())
 }
 
-/// 获取长期记忆片段（最近 30 条）
+/// 获取用户画像全部条目（替代旧的 get_long_term_memories）
 #[tauri::command]
 pub async fn get_long_term_memories(
     state: State<'_, AppState>,
 ) -> CmdResult<Vec<serde_json::Value>> {
     use sqlx::Row as _;
     let rows = sqlx::query(
-        "SELECT id, content, created_at FROM long_term_memories ORDER BY id DESC LIMIT 30"
+        "SELECT key, value, confidence, source, updated_at FROM user_profile ORDER BY updated_at DESC LIMIT 30"
     )
     .fetch_all(&state.pool)
     .await
     .map_err(e)?;
 
     Ok(rows.iter().map(|r| {
-        let id: i64         = r.get("id");
-        let content: String = r.get("content");
-        let ts: String      = r.get("created_at");
-        serde_json::json!({ "id": id, "content": content, "created_at": ts })
+        serde_json::json!({
+            "id": r.get::<String, _>("key"),
+            "content": r.get::<String, _>("value"),
+            "confidence": r.get::<f64, _>("confidence"),
+            "source": r.get::<String, _>("source"),
+            "created_at": r.get::<String, _>("updated_at"),
+        })
     }).collect())
 }
 

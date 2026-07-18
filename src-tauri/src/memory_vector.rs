@@ -258,10 +258,5 @@ pub async fn recall_keyword(pool: &SqlitePool, query: &str) -> Vec<String> {
             results.push(format!("[用户画像] {}: {}", row.get::<String, _>("key"), row.get::<String, _>("value")));
         }
     }
-    if let Ok(rows) = sqlx::query(
-        "SELECT content FROM long_term_memories WHERE LOWER(content) LIKE ? ORDER BY created_at DESC LIMIT 3",
-    ).bind(&kw).fetch_all(pool).await {
-        for row in rows { results.push(format!("[长期记忆] {}", row.get::<String, _>("content"))); }
-    }
     results
 }

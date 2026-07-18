@@ -21,7 +21,6 @@ pub struct ContextPack {
     pub profile_items: Vec<String>,
     pub persona_items: Vec<String>,
     pub summaries: Vec<String>,
-    pub long_term_memories: Vec<String>,
     pub vector_memories: Vec<String>,
     pub suggested_tools: Vec<String>,
     pub tool_policy: ToolPolicy,
@@ -33,7 +32,6 @@ impl ContextPack {
             && self.profile_items.is_empty()
             && self.persona_items.is_empty()
             && self.summaries.is_empty()
-            && self.long_term_memories.is_empty()
             && self.vector_memories.is_empty()
     }
 
@@ -57,10 +55,6 @@ impl ContextPack {
             parts.push(format!("【历史摘要】\n{}", self.summaries.join("\n")));
         }
 
-        if !self.long_term_memories.is_empty() {
-            parts.push(format!("【长期记忆】\n{}", self.long_term_memories.join("\n")));
-        }
-
         if !self.vector_memories.is_empty() {
             parts.push(format!("【相关语义记忆】\n{}", self.vector_memories.join("\n")));
         }
@@ -79,14 +73,12 @@ struct ContextRequirements {
     need_profile: bool,
     need_persona: bool,
     need_summaries: bool,
-    need_long_term: bool,
     need_vector_recall: bool,
     need_working_memory: bool,
 
     max_profile_items: usize,
     max_persona_items: usize,
     max_summaries: usize,
-    max_long_term_items: usize,
     max_vector_items: usize,
 
     max_total_chars: usize,
@@ -121,13 +113,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: true,
             need_summaries: false,
-            need_long_term: false,
             need_vector_recall: false,
             need_working_memory: false,
             max_profile_items: 2,
             max_persona_items: 4,
             max_summaries: 0,
-            max_long_term_items: 0,
             max_vector_items: 0,
             max_total_chars: 1500,
         },
@@ -136,13 +126,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: true,
             need_summaries: true,
-            need_long_term: true,
             need_vector_recall: use_vector(decision),
             need_working_memory: use_wm(decision),
             max_profile_items: 4,
             max_persona_items: 2,
             max_summaries: 3,
-            max_long_term_items: 3,
             max_vector_items: 5,
             max_total_chars: 3500,
         },
@@ -151,13 +139,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: true,
             need_summaries: true,
-            need_long_term: true,
             need_vector_recall: use_vector(decision),
             need_working_memory: true,
             max_profile_items: 5,
             max_persona_items: 3,
             max_summaries: 5,
-            max_long_term_items: 5,
             max_vector_items: 8,
             max_total_chars: 5500,
         },
@@ -166,13 +152,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: true,
             need_summaries: true,
-            need_long_term: true,
             need_vector_recall: use_vector(decision),
             need_working_memory: true,
             max_profile_items: 5,
             max_persona_items: 2,
             max_summaries: 6,
-            max_long_term_items: 5,
             max_vector_items: 8,
             max_total_chars: 6000,
         },
@@ -181,13 +165,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: true,
             need_summaries: false,
-            need_long_term: true,
             need_vector_recall: false,
             need_working_memory: false,
             max_profile_items: 3,
             max_persona_items: 2,
             max_summaries: 0,
-            max_long_term_items: 3,
             max_vector_items: 0,
             max_total_chars: 2000,
         },
@@ -196,13 +178,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: false,
             need_summaries: false,
-            need_long_term: false,
             need_vector_recall: use_vector(decision),
             need_working_memory: false,
             max_profile_items: 2,
             max_persona_items: 0,
             max_summaries: 0,
-            max_long_term_items: 0,
             max_vector_items: 5,
             max_total_chars: 3000,
         },
@@ -211,13 +191,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: true,
             need_summaries: false,
-            need_long_term: false,
             need_vector_recall: false,
             need_working_memory: false,
             max_profile_items: 3,
             max_persona_items: 5,
             max_summaries: 0,
-            max_long_term_items: 0,
             max_vector_items: 0,
             max_total_chars: 2200,
         },
@@ -226,13 +204,11 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_profile: true,
             need_persona: true,
             need_summaries: true,
-            need_long_term: true,
             need_vector_recall: true,
             need_working_memory: true,
             max_profile_items: 8,
             max_persona_items: 4,
             max_summaries: 10,
-            max_long_term_items: 8,
             max_vector_items: 10,
             max_total_chars: 9000,
         },
@@ -373,20 +349,6 @@ pub async fn build_context_pack(
         vec![]
     };
 
-    // ── 长期记忆 ──────────────────────────────────────────────────────────────
-    let long_term_memories = if req.need_long_term {
-        if let Ok(mems) = db::get_recent_memories_global(pool, req.max_long_term_items as i64).await
-        {
-            mems.iter()
-                .map(|m| format!("  · {}", truncate_memory(&m.content, 200)))
-                .collect()
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
-
     // ── 自动向量召回（按意图阈值/去重/截断） ────────────────────────────────
     let vector_memories =
         load_vector_memories(pool, llm_cfg, content, &req, decision).await;
@@ -398,7 +360,6 @@ pub async fn build_context_pack(
         profile_items,
         persona_items,
         summaries,
-        long_term_memories,
         vector_memories,
         suggested_tools: decision.suggested_tools.clone(),
         tool_policy: decision.tool_policy,

@@ -30,13 +30,11 @@ const { switchToPet, switching } = useAppMode()
 
 // ─── 记忆浏览（内嵌在此文件中，避免新建文件） ────────────────────────────────
 
-interface MemoryItem  { id: number; content: string; created_at: string }
 interface ProfileItem { key: string; value: string; confidence: number; source: string; updated_at: string }
 
-const memories     = ref<MemoryItem[]>([])
 const profiles     = ref<ProfileItem[]>([])
 const memLoading   = ref(false)
-const memTab       = ref<'profile' | 'chebo' | 'ltm'>('profile')
+const memTab       = ref<'profile' | 'chebo'>('profile')
 
 interface CheboProfileItem {
   key: string; value: string; category: string
@@ -57,12 +55,10 @@ const editingValue = ref('')
 async function loadMemories() {
   memLoading.value = true
   try {
-    const [ltm, prof, chebo] = await Promise.all([
-      invoke<MemoryItem[]>('get_long_term_memories').catch(() => []),
+    const [prof, chebo] = await Promise.all([
       invoke<ProfileItem[]>('get_user_profile').catch(() => []),
       tauriService.getCheboProfile().catch(() => []),
     ])
-    memories.value = ltm.slice(0, 30)
     profiles.value = prof
     cheboProfiles.value = chebo
   } finally {
@@ -532,11 +528,6 @@ const navItems: NavItem[] = [
                 :class="{ active: memTab === 'chebo' }"
                 @click="memTab = 'chebo'"
               >Chebo 画像（{{ cheboProfiles.length }}）</button>
-              <button
-                class="mem-tab"
-                :class="{ active: memTab === 'ltm' }"
-                @click="memTab = 'ltm'"
-              >长期记忆（{{ memories.length }}）</button>
               <button class="mem-refresh" @click="loadMemories" title="刷新">↻</button>
             </div>
 
@@ -610,14 +601,6 @@ const navItems: NavItem[] = [
               </div>
             </div>
 
-            <!-- 长期记忆 -->
-            <div v-else-if="memTab === 'ltm'">
-              <div v-if="!memories.length" class="mem-empty">暂无长期记忆，多聊聊吧！</div>
-              <div v-for="m in memories" :key="m.id" class="mem-card">
-                <div class="mem-content">{{ m.content }}</div>
-                <div class="mem-time">{{ m.created_at }}</div>
-              </div>
-            </div>
           </template>
         </div>
 
