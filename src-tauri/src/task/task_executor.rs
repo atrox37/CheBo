@@ -13,8 +13,10 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 use std::sync::Arc;
+use std::collections::HashMap;
 use anyhow::Result;
 use tauri::AppHandle;
+use tokio::sync::oneshot;
 
 use crate::llm::LlmConfig;
 use crate::tool_dispatcher::{PendingMap, ToolDispatcher};
@@ -26,11 +28,12 @@ use super::task_planner;
 use super::task_store::TaskStore;
 
 pub struct TaskExecutor {
-    pub store:         Arc<TaskStore>,
-    pub registry:      Arc<ToolRegistry>,
-    pub agent_pending: PendingMap,
-    pub llm_cfg:       Arc<LlmConfig>,
-    pub app:           AppHandle,
+    pub store:            Arc<TaskStore>,
+    pub registry:         Arc<ToolRegistry>,
+    pub agent_pending:    PendingMap,
+    pub confirm_channels: Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<bool>>>>,  // 🆕 Ticket 02
+    pub llm_cfg:          Arc<LlmConfig>,
+    pub app:              AppHandle,
 }
 
 impl TaskExecutor {
@@ -139,6 +142,7 @@ impl TaskExecutor {
                 &self.registry,
                 vec![call],
                 &self.agent_pending,
+                &self.confirm_channels,  // 🆕 Ticket 02
                 Some(&self.app),
             ).await;
 

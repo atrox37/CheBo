@@ -10,8 +10,10 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 use std::sync::Arc;
+use std::collections::HashMap;
 use anyhow::{bail, Result};
 use tauri::AppHandle;
+use tokio::sync::oneshot;
 
 use crate::llm::LlmConfig;
 use crate::tool_dispatcher::PendingMap;
@@ -24,31 +26,34 @@ use super::task_planner;
 use super::task_store::TaskStore;
 
 pub struct TaskManager {
-    pub store:         Arc<TaskStore>,
-    pub registry:      Arc<ToolRegistry>,
-    pub agent_pending: PendingMap,
-    pub llm_cfg:       Arc<LlmConfig>,
-    pub app:           AppHandle,
+    pub store:            Arc<TaskStore>,
+    pub registry:         Arc<ToolRegistry>,
+    pub agent_pending:    PendingMap,
+    pub confirm_channels: Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<bool>>>>,  // 🆕 Ticket 02
+    pub llm_cfg:          Arc<LlmConfig>,
+    pub app:              AppHandle,
 }
 
 impl TaskManager {
     pub fn new(
-        store:         Arc<TaskStore>,
-        registry:      Arc<ToolRegistry>,
-        agent_pending: PendingMap,
-        llm_cfg:       Arc<LlmConfig>,
-        app:           AppHandle,
+        store:            Arc<TaskStore>,
+        registry:         Arc<ToolRegistry>,
+        agent_pending:    PendingMap,
+        confirm_channels: Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<bool>>>>,  // 🆕 Ticket 02
+        llm_cfg:          Arc<LlmConfig>,
+        app:              AppHandle,
     ) -> Self {
-        Self { store, registry, agent_pending, llm_cfg, app }
+        Self { store, registry, agent_pending, confirm_channels, llm_cfg, app }
     }
 
     fn executor(&self) -> TaskExecutor {
         TaskExecutor {
-            store:         self.store.clone(),
-            registry:      self.registry.clone(),
-            agent_pending: self.agent_pending.clone(),
-            llm_cfg:       self.llm_cfg.clone(),
-            app:           self.app.clone(),
+            store:            self.store.clone(),
+            registry:         self.registry.clone(),
+            agent_pending:    self.agent_pending.clone(),
+            confirm_channels: self.confirm_channels.clone(),  // 🆕 Ticket 02
+            llm_cfg:          self.llm_cfg.clone(),
+            app:              self.app.clone(),
         }
     }
 

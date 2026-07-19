@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use sqlx::SqlitePool;
+use tokio::sync::{oneshot, Semaphore};
 
 use crate::agent::AgentRuntime;
 use crate::event_bus::EventBus;
@@ -39,6 +40,8 @@ pub struct AppState {
     pub tool_registry: Arc<ToolRegistry>,
     /// Agent 工具调用挂起表（Agent 循环发起的 L2/L3 工具等待用户确认）
     pub agent_pending: PendingMap,
+    /// 🆕 Ticket 02: oneshot channel 注册表（替代轮询），token → sender
+    pub confirm_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Sandbox Policy: 工具执行安全策略（路径/命令/速率）
     #[allow(dead_code)]
     pub sandbox: Arc<SandboxPolicy>,
@@ -48,6 +51,11 @@ pub struct AppState {
     pub vault_root:   std::path::PathBuf,
     /// P1: 当前聊天生成取消标志（send_message 后台任务轮询）
     pub chat_cancel:  Arc<AtomicBool>,
+    /// 🆕 Ticket 03: System Prompt 缓存（session_id → frozen system prompt）
+    pub system_prompt_cache: Arc<Mutex<HashMap<String, String>>>,
+    /// 🆕 Ticket 13: 摘要自动生成开关 + 限流信号量
+    pub summary_enabled: Arc<AtomicBool>,
+    pub summary_semaphore: Arc<Semaphore>,
 }
 
 // AppState 的字段全部 Send + Sync，Tauri manage() 要求此 trait

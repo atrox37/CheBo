@@ -66,7 +66,13 @@ const pendingCall = ref<PendingCall | null>(null);
 listen<PendingCall>('tool_confirm_required', (event) => {
   pendingCall.value = event.payload;
   visible.value     = true;
-  chatStore.setToolConfirmOpen(true);
+  // 🆕 Ticket 10: 同时添加内嵌确认消息到聊天
+  chatStore.addToolConfirmMessage({
+    token: event.payload.token,
+    tool:  event.payload.tool,
+    args:  event.payload.args,
+    level: event.payload.level,
+  });
 });
 
 const levelLabel = computed(() => {

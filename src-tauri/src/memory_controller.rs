@@ -342,30 +342,27 @@ async fn persist_candidate(
     pool: &SqlitePool,
     candidate: &MemoryCandidate,
     score: f64,
-    _session_id: &str,
+    session_id: &str,
 ) -> Result<()> {
     let target = candidate.memory_type.storage_target();
+    let msg_id = candidate.source_message_id;
+    let _ = score; // 评分已在前置流程使用
 
     match target {
         "user_profile" => {
-            if let Some(key) = &candidate.key {
-                crate::memory::core_memory_store::set_user_profile(pool, key, &candidate.content).await?;
-            } else {
-                // 无 key 的 Episode/自由文本，自动生成 key
-                let key = format!("epi_{}", candidate.content.chars().take(10).collect::<String>());
-                crate::memory::core_memory_store::set_user_profile(pool, &key, &candidate.content).await?;
-            }
+            let default_key = format!("epi_{}", candidate.content.chars().take(10).collect::<String>());
+            let key = candidate.key.as_deref().unwrap_or(&default_key);
+            crate::memory::core_memory_store::set_user_profile_with_source(
+                pool, key, &candidate.content,
+                Some(session_id), msg_id,
+            ).await?;
         }
         "persona_memory" => {
             if let Some(key) = &candidate.key {
-                crate::memory::core_memory_store::upsert_persona_memory(
-                    pool,
-                    key,
-                    &candidate.content,
-                    "trait",
-                    candidate.confidence,
-                )
-                .await?;
+                crate::memory::core_memory_store::upsert_persona_memory_with_source(
+                    pool, key, &candidate.content, "trait", candidate.confidence,
+                    Some(session_id), msg_id,
+                ).await?;
             }
         }
         _ => {}

@@ -2,6 +2,7 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown } from '@/utils/emotionTag'
+import { invoke } from '@tauri-apps/api/core'
 
 const chatStore = useChatStore()
 const listRef = ref<HTMLElement | null>(null)
@@ -22,6 +23,16 @@ watch(messageCount, async () => {
   await nextTick()
   listRef.value?.scrollTo({ top: listRef.value.scrollHeight, behavior: 'smooth' })
 })
+
+// 🆕 Ticket 10: 内嵌确认按钮处理
+async function handleInlineConfirm(token: string, approved: boolean) {
+  try {
+    await invoke('confirm_tool_call', { token, confirm: approved })
+    chatStore.resolveToolConfirm(token, approved)
+  } catch (e) {
+    console.error('confirm_tool_call failed:', e)
+  }
+}
 </script>
 
 <template>
@@ -36,9 +47,27 @@ watch(messageCount, async () => {
       v-for="msg in chatStore.messages"
       :key="msg.id"
       class="msg-row"
-      :class="msg.role === 'user' ? 'msg-user' : 'msg-assistant'"
+      :class="msg.role === 'user' ? 'msg-user' : msg.role === 'confirm' ? 'msg-confirm' : 'msg-assistant'"
     >
-      <div class="msg-body">
+      <!-- 🆕 Ticket 10: 内嵌工具确认气泡 -->
+      <div v-if="msg.role === 'confirm' && !msg.confirmResolved" class="confirm-inline">
+        <div class="confirm-header">
+          <span class="confirm-badge" :class="'level-' + (msg.confirmLevel ?? 2)">
+            L{{ msg.confirmLevel }}
+          </span>
+          <span>{{ msg.confirmTool }}</span>
+        </div>
+        <pre class="confirm-args">{{ msg.confirmArgs?.slice(0, 200) }}</pre>
+        <div class="confirm-actions">
+          <button class="btn-confirm-yes" @click="handleInlineConfirm(msg.confirmToken!, true)">确认执行</button>
+          <button class="btn-confirm-no" @click="handleInlineConfirm(msg.confirmToken!, false)">拒绝</button>
+        </div>
+      </div>
+      <div v-else-if="msg.role === 'confirm' && msg.confirmResolved" class="confirm-resolved">
+        {{ msg.content }}
+      </div>
+
+      <div v-else class="msg-body">
         <div
           class="msg-bubble"
           :class="{
@@ -97,6 +126,45 @@ watch(messageCount, async () => {
 
 .msg-user {
   flex-direction: row-reverse;
+}
+
+/* 🆕 Ticket 10: 内嵌工具确认气泡 */
+.msg-confirm {
+  justify-content: center;
+}
+.confirm-inline {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 12px;
+  padding: 12px 16px;
+  max-width: 80%;
+}
+.confirm-header {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; margin-bottom: 8px;
+}
+.confirm-badge {
+  padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 700;
+}
+.level-2 { background: #e6a81733; color: #e6a817; }
+.level-3 { background: #e6505033; color: #e65050; }
+.confirm-args {
+  font-size: 12px; color: rgba(255,255,255,0.5);
+  white-space: pre-wrap; margin-bottom: 12px;
+  max-height: 100px; overflow: hidden;
+}
+.confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.btn-confirm-yes, .btn-confirm-no {
+  padding: 6px 16px; border-radius: 8px; border: none; cursor: pointer;
+  font-size: 13px; font-weight: 500;
+}
+.btn-confirm-yes { background: #4a9eff; color: white; }
+.btn-confirm-yes:hover { background: #3a8eef; }
+.btn-confirm-no { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
+.btn-confirm-no:hover { background: rgba(255,255,255,0.15); }
+.confirm-resolved {
+  font-size: 13px; color: rgba(255,255,255,0.5); text-align: center;
+  padding: 4px 0;
 }
 
 /* 头像 */

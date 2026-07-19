@@ -27,6 +27,11 @@ pub struct MemorySummary {
     pub msg_end_id: i64,
     pub summary: String,
     pub created_at: String,
+    // 🆕 Ticket 05: provenance
+    pub source_session_id: Option<String>,
+    pub source_msg_id: Option<i64>,
+    pub extracted_at: Option<String>,
+    pub extraction_method: Option<String>,
 }
 
 // ─── messages 表 CRUD ────────────────────────────────────────────────────────
@@ -52,7 +57,21 @@ pub async fn save_message(
     .bind(&now)
     .execute(pool)
     .await?;
-    Ok(result.last_insert_rowid())
+    let msg_id = result.last_insert_rowid();
+
+    // 🆕 Ticket 04: 同步维护 FTS5 索引（仅 user/assistant 消息）
+    if role == "user" || role == "assistant" {
+        let _ = sqlx::query(
+            "INSERT INTO message_fts(rowid, content, session_id) VALUES (?1, ?2, ?3)"
+        )
+        .bind(msg_id)
+        .bind(content)
+        .bind(session_id)
+        .execute(pool)
+        .await;
+    }
+
+    Ok(msg_id)
 }
 
 pub async fn get_messages(
@@ -185,22 +204,27 @@ pub async fn save_summary(
 ) -> Result<i64> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = sqlx::query(
-        "INSERT INTO memory_summaries (session_id, msg_start_id, msg_end_id, summary, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5)"
+        "INSERT INTO memory_summaries (session_id, msg_start_id, msg_end_id, summary, created_at,
+                                       source_session_id, source_msg_id, extracted_at, extraction_method) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'llm')"
     )
     .bind(session_id)
     .bind(msg_start_id)
     .bind(msg_end_id)
     .bind(summary)
     .bind(&now)
+    .bind(session_id)  // source_session_id = 当前 session
+    .bind(msg_end_id)  // source_msg_id = 摘要覆盖的最后一条消息
+    .bind(&now)        // extracted_at
     .execute(pool)
     .await?;
     Ok(result.last_insert_rowid())
 }
 
 pub async fn get_summaries(pool: &SqlitePool, limit: i64) -> Result<Vec<MemorySummary>> {
-    let rows = sqlx::query_as::<_, (i64, String, i64, i64, String, String)>(
-        "SELECT id, session_id, msg_start_id, msg_end_id, summary, created_at \
+    let rows = sqlx::query_as::<_, (i64, String, i64, i64, String, String, Option<String>, Option<i64>, Option<String>, Option<String>)>(
+        "SELECT id, session_id, msg_start_id, msg_end_id, summary, created_at,
+                source_session_id, source_msg_id, extracted_at, extraction_method
          FROM memory_summaries ORDER BY id DESC LIMIT ?1"
     )
     .bind(limit)
@@ -209,8 +233,10 @@ pub async fn get_summaries(pool: &SqlitePool, limit: i64) -> Result<Vec<MemorySu
 
     Ok(rows
         .into_iter()
-        .map(|(id, session_id, msg_start_id, msg_end_id, summary, created_at)| {
-            MemorySummary { id, session_id, msg_start_id, msg_end_id, summary, created_at }
+        .map(|(id, session_id, msg_start_id, msg_end_id, summary, created_at,
+               source_session_id, source_msg_id, extracted_at, extraction_method)| {
+            MemorySummary { id, session_id, msg_start_id, msg_end_id, summary, created_at,
+                source_session_id, source_msg_id, extracted_at, extraction_method }
         })
         .collect())
 }
@@ -224,4 +250,61 @@ pub async fn get_last_summarized_msg_id(pool: &SqlitePool, session_id: &str) -> 
     .fetch_one(pool)
     .await?;
     Ok(row.get::<i64, _>("last_id"))
+}
+
+// ─── FTS5 全文搜索（Ticket 04） ──────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct FtsResult {
+    pub msg_id: i64,
+    pub session_id: String,
+    pub content_snippet: String,  // 截断到 ≤200 字
+}
+
+/// 跨会话 FTS5 全文检索，排除当前 session
+pub async fn fts_search(
+    pool: &SqlitePool,
+    query: &str,
+    exclude_session: &str,
+    limit: usize,
+) -> Result<Vec<FtsResult>> {
+    // FTS5 MATCH 语法：直接使用用户查询（需要转义特殊字符）
+    let sanitized = query
+        .replace('"', " ")
+        .replace('*', " ")
+        .replace('-', " ")
+        .trim()
+        .to_string();
+    if sanitized.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let rows = sqlx::query(
+        "SELECT rowid, session_id, snippet(message_fts, 0, '<b>', '</b>', '...', 40) as snip \
+         FROM message_fts \
+         WHERE message_fts MATCH ?1 AND session_id != ?2 \
+         ORDER BY rank LIMIT ?3"
+    )
+    .bind(&sanitized)
+    .bind(exclude_session)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let snip: String = r.get("snip");
+            // 移除 HTML 标签，截断
+            let clean = snip
+                .replace("<b>", "")
+                .replace("</b>", "");
+            let truncated: String = clean.chars().take(200).collect();
+            FtsResult {
+                msg_id: r.get("rowid"),
+                session_id: r.get("session_id"),
+                content_snippet: truncated,
+            }
+        })
+        .collect())
 }

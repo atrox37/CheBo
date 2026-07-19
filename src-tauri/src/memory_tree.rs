@@ -24,6 +24,10 @@ use crate::vault;
 
 /// L0 Chunk 触发阈值：每积累 N 条新消息写一个 Chunk
 const CHUNK_EVERY: usize = 10;
+/// 🆕 Ticket 07: 2 小时 TTL — 超时后强制封存未满的 Chunk
+const CHUNK_TTL_HOURS: i64 = 2;
+/// 🆕 Ticket 07: 当日 Chunk 超过此数量时提前触发 L1→L2 级联
+const DAILY_CHUNK_CASCADE_THRESHOLD: usize = 20;
 
 // ─── 主入口：全量增量同步 ─────────────────────────────────────────────────────
 
@@ -55,6 +59,8 @@ pub async fn sync_session(
     };
 
     if new_msgs.is_empty() {
+        // 🆕 Ticket 07: TTL 检查 — 即使无新消息，检查是否需要强制封存
+        force_seal_stale_chunks(pool, vault_root, session_id).await;
         log::debug!("memory_tree: session={session_id} 无新消息");
         return;
     }
@@ -102,6 +108,66 @@ pub async fn sync_memories(pool: &SqlitePool, vault_root: &Path) {
 }
 
 // ─── Step 1: L0 Chunk Seal ───────────────────────────────────────────────────
+
+/// 🆕 Ticket 07: 强制封存过期的未满 Chunk
+/// 如果距离最后一个 Chunk 超过 TTL，封存剩余的未处理消息
+async fn force_seal_stale_chunks(
+    pool:       &SqlitePool,
+    vault_root: &Path,
+    session_id: &str,
+) {
+    // 获取最后一个 Chunk 的创建时间
+    let last_chunk_time = match sqlx::query(
+        "SELECT created_at FROM vault_chunks WHERE session_id = ?1 ORDER BY id DESC LIMIT 1"
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(Some(row)) => {
+            let ts: String = row.get("created_at");
+            ts
+        }
+        _ => return, // 没有任何 Chunk，不需要强制封存
+    };
+
+    // 解析时间并检查 TTL
+    if let Ok(last_time) = chrono::NaiveDateTime::parse_from_str(&last_chunk_time, "%Y-%m-%d %H:%M:%S") {
+        let elapsed = chrono::Local::now().naive_local() - last_time;
+        if elapsed.num_hours() < CHUNK_TTL_HOURS {
+            return; // 还没到 TTL
+        }
+    } else {
+        return;
+    }
+
+    // 获取最后一个 Chunk 覆盖的 msg_end_id
+    let last_msg_id = match sqlx::query(
+        "SELECT COALESCE(MAX(msg_end_id), 0) as lid FROM vault_chunks WHERE session_id = ?1"
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(Some(row)) => row.get::<i64, _>("lid"),
+        _ => return,
+    };
+
+    // 获取 TTL 超时后的新消息（但未满 CHUNK_EVERY）
+    let stale_msgs = match crate::memory::episode_store::get_messages_after_chunk(
+        pool, session_id, last_msg_id, CHUNK_EVERY as i64,
+    ).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    if stale_msgs.is_empty() {
+        return;
+    }
+
+    log::info!("memory_tree TTL: session={session_id} 强制封存 {} 条过期消息", stale_msgs.len());
+    seal_l0_chunks(pool, vault_root, session_id, &stale_msgs).await;
+}
 
 /// 将新消息按 CHUNK_EVERY 条切割，写入 vault/Chunks/，保存 DB 记录
 /// 返回受影响的日期集合（用于触发 L1 更新）
@@ -173,7 +239,8 @@ async fn seal_l1_daily(
             .iter()
             .filter(|c| c.md_path.contains(&format!("Chunks/{date}")))
             .collect();
-
+        // 🆕 Ticket 07: 当日 Chunk 超过阈值时强制触发 cascade
+        let force_cascade = day_chunks.len() > DAILY_CHUNK_CASCADE_THRESHOLD;
         if day_chunks.is_empty() {
             continue;
         }
@@ -232,6 +299,10 @@ async fn seal_l1_daily(
                     log::warn!("seal_l1 upsert_summary: {e}");
                 } else {
                     log::info!("L1 Daily Summary 更新: {date}");
+                    // 🆕 Ticket 07: 超阈值时记录日志
+                    if force_cascade {
+                        log::info!("L1 cascade: {date} 有 {} 个 Chunk，超过阈值，提前触发 L1→L2", day_chunks.len());
+                    }
                     let week_key = vault::week_key_from_date(date);
                     if !affected_weeks.contains(&week_key) {
                         affected_weeks.push(week_key);

@@ -12,6 +12,7 @@ use sqlx::SqlitePool;
 use crate::chat_intent::{ChatIntent, IntentDecision, RecallStrategy, ToolPolicy};
 use crate::db;
 use crate::llm::LlmConfig;
+use crate::memory::episode_store; // 🆕 Ticket 04
 use crate::memory_vector;
 
 // ─── 结构化上下文包 ───────────────────────────────────────────────────────────
@@ -22,6 +23,7 @@ pub struct ContextPack {
     pub persona_items: Vec<String>,
     pub summaries: Vec<String>,
     pub vector_memories: Vec<String>,
+    pub fts_results: Vec<String>,  // 🆕 Ticket 04: FTS5 跨会话检索结果
     pub suggested_tools: Vec<String>,
     pub tool_policy: ToolPolicy,
 }
@@ -33,6 +35,7 @@ impl ContextPack {
             && self.persona_items.is_empty()
             && self.summaries.is_empty()
             && self.vector_memories.is_empty()
+            && self.fts_results.is_empty()
     }
 
     /// 格式化为注入 system prompt 的文本块
@@ -59,6 +62,10 @@ impl ContextPack {
             parts.push(format!("【相关语义记忆】\n{}", self.vector_memories.join("\n")));
         }
 
+        if !self.fts_results.is_empty() {
+            parts.push(format!("【跨会话历史记录（能力可能已变化）】\n{}", self.fts_results.join("\n")));
+        }
+
         if parts.is_empty() {
             String::new()
         } else {
@@ -75,11 +82,13 @@ struct ContextRequirements {
     need_summaries: bool,
     need_vector_recall: bool,
     need_working_memory: bool,
+    need_fts: bool,  // 🆕 Ticket 04
 
     max_profile_items: usize,
     max_persona_items: usize,
     max_summaries: usize,
     max_vector_items: usize,
+    max_fts_results: usize,  // 🆕 Ticket 04
 
     max_total_chars: usize,
 }
@@ -115,10 +124,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: false,
             need_vector_recall: false,
             need_working_memory: false,
+            need_fts: false,
             max_profile_items: 2,
             max_persona_items: 4,
             max_summaries: 0,
             max_vector_items: 0,
+            max_fts_results: 0,
             max_total_chars: 1500,
         },
 
@@ -128,10 +139,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: true,
             need_vector_recall: use_vector(decision),
             need_working_memory: use_wm(decision),
+            need_fts: true,
             max_profile_items: 4,
             max_persona_items: 2,
             max_summaries: 3,
             max_vector_items: 5,
+            max_fts_results: 3,
             max_total_chars: 3500,
         },
 
@@ -141,10 +154,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: true,
             need_vector_recall: use_vector(decision),
             need_working_memory: true,
+            need_fts: true,
             max_profile_items: 5,
             max_persona_items: 3,
             max_summaries: 5,
             max_vector_items: 8,
+            max_fts_results: 5,
             max_total_chars: 5500,
         },
 
@@ -154,10 +169,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: true,
             need_vector_recall: use_vector(decision),
             need_working_memory: true,
+            need_fts: true,
             max_profile_items: 5,
             max_persona_items: 2,
             max_summaries: 6,
             max_vector_items: 8,
+            max_fts_results: 5,
             max_total_chars: 6000,
         },
 
@@ -167,10 +184,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: false,
             need_vector_recall: false,
             need_working_memory: false,
+            need_fts: false,
             max_profile_items: 3,
             max_persona_items: 2,
             max_summaries: 0,
             max_vector_items: 0,
+            max_fts_results: 0,
             max_total_chars: 2000,
         },
 
@@ -180,10 +199,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: false,
             need_vector_recall: use_vector(decision),
             need_working_memory: false,
+            need_fts: true,
             max_profile_items: 2,
             max_persona_items: 0,
             max_summaries: 0,
             max_vector_items: 5,
+            max_fts_results: 3,
             max_total_chars: 3000,
         },
 
@@ -193,10 +214,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: false,
             need_vector_recall: false,
             need_working_memory: false,
+            need_fts: false,
             max_profile_items: 3,
             max_persona_items: 5,
             max_summaries: 0,
             max_vector_items: 0,
+            max_fts_results: 0,
             max_total_chars: 2200,
         },
 
@@ -206,10 +229,12 @@ fn requirements_for_decision(decision: &IntentDecision) -> ContextRequirements {
             need_summaries: true,
             need_vector_recall: true,
             need_working_memory: true,
+            need_fts: true,
             max_profile_items: 8,
             max_persona_items: 4,
             max_summaries: 10,
             max_vector_items: 10,
+            max_fts_results: 8,
             max_total_chars: 9000,
         },
     }
@@ -305,10 +330,11 @@ pub async fn build_context_pack(
     let req = requirements_for_decision(decision);
 
     // ── 用户画像 ──────────────────────────────────────────────────────────────
-    let profile_items = if req.need_profile {
+    let profile_items: Vec<String> = if req.need_profile {
         if let Ok(profile) = crate::memory::core_memory_store::get_user_profile_all(pool).await {
             profile
                 .iter()
+                .filter(|e| e.preference_type.as_deref() != Some("explicit"))  // 🆕 Ticket 08: 排除显式偏好
                 .take(req.max_profile_items)
                 .map(|e| format!("  · {} → {}", e.key, e.value))
                 .collect()
@@ -353,6 +379,23 @@ pub async fn build_context_pack(
     let vector_memories =
         load_vector_memories(pool, llm_cfg, content, &req, decision).await;
 
+    // ── 🆕 Ticket 04: FTS5 跨会话快速检索 ─────────────────────────────────
+    let fts_results = if req.need_fts && !content.trim().is_empty() {
+        match episode_store::fts_search(pool, content, session_id, req.max_fts_results).await {
+            Ok(results) => results
+                .iter()
+                .map(|r| {
+                    format!("  · [会话:{}] {}", 
+                        &r.session_id[..r.session_id.len().min(8)],
+                        r.content_snippet)
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    } else {
+        vec![]
+    };
+
     let _ = session_id; // P3: working memory 查询
 
     ContextPack {
@@ -361,6 +404,7 @@ pub async fn build_context_pack(
         persona_items,
         summaries,
         vector_memories,
+        fts_results,  // 🆕 Ticket 04
         suggested_tools: decision.suggested_tools.clone(),
         tool_policy: decision.tool_policy,
     }

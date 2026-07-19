@@ -192,11 +192,30 @@ function buildSendPayload(): { content: string; images: string[] } {
 function send() {
   const { content, images } = buildSendPayload()
   if (!content && images.length === 0) return
-  if (chatStore.isGenerating) return
+
+  // 🆕 Ticket 11: 生成中 → 排队
+  if (chatStore.isGenerating) {
+    chatStore.addQueuedMessage(content || '(图片消息)')
+    inputText.value = ''
+    attachments.value = []
+    return
+  }
+
   localStorage.setItem(STORAGE_KEYS.deepThink, deepThink.value ? '1' : '0')
   tauriService.sendMessage(content, images, deepThink.value, !!props.inline)
   inputText.value = ''
   attachments.value = []
+}
+
+// 🆕 Ticket 11: 引导 — 取消当前生成 + 注入方向修正
+async function steerMessage(text: string) {
+  await tauriService.cancelChatGeneration()
+  // 等待取消生效
+  await new Promise(r => setTimeout(r, 200))
+  tauriService.sendMessage(
+    `【方向修正】${text}`,
+    [], deepThink.value, !!props.inline
+  )
 }
 
 function toggleDeepThink() {
@@ -259,6 +278,17 @@ async function onMicUp() {
       <div class="drag-hint">
         <Paperclip :size="28" />
         <span>松开鼠标添加附件</span>
+      </div>
+    </div>
+
+    <!-- 🆕 Ticket 11: 排队消息区 -->
+    <div v-if="chatStore.queuedMessages.length" class="queued-area">
+      <div v-for="msg in chatStore.queuedMessages" :key="msg.id" class="queued-msg">
+        <span class="queued-text">{{ msg.text }}</span>
+        <button class="steer-btn" @click="steerMessage(msg.text); chatStore.removeQueuedMessage(msg.id)">
+          引导 →
+        </button>
+        <button class="queue-remove" @click="chatStore.removeQueuedMessage(msg.id)">✕</button>
       </div>
     </div>
 
@@ -698,3 +728,31 @@ async function onMicUp() {
 }
 .voice-err { display: block; color: #d05050; margin-top: 2px; }
 </style>
+
+/* ?? Ticket 11: �Ŷ���Ϣ�� */
+.queued-area {
+  padding: 4px 10px 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.queued-msg {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 8px; padding: 4px 8px;
+  font-size: 13px;
+}
+.queued-text {
+  flex: 1; color: rgba(255,255,255,0.6);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.steer-btn {
+  padding: 2px 10px; border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px; background: transparent;
+  color: #4a9eff; font-size: 12px; cursor: pointer;
+  white-space: nowrap;
+}
+.steer-btn:hover { background: rgba(74,158,255,0.15); }
+.queue-remove {
+  padding: 2px 6px; border: none; background: transparent;
+  color: rgba(255,255,255,0.3); cursor: pointer; font-size: 14px;
+}
+.queue-remove:hover { color: rgba(255,255,255,0.7); }

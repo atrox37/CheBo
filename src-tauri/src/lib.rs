@@ -38,6 +38,7 @@ mod working_memory;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Semaphore;  // 🆕 Ticket 13
 
 use sqlx::SqlitePool;
 use tauri::Manager;
@@ -167,6 +168,15 @@ pub fn run() {
             // Agent 驱动的工具调用挂起表（tokio Mutex，供 async 等待确认）
             let agent_pending: tool_dispatcher::PendingMap =
                 Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+            // 🆕 Ticket 02: oneshot channel 注册表（替代轮询）
+            let confirm_channels: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+            // 🆕 Ticket 03: System Prompt 缓存
+            let system_prompt_cache: Arc<Mutex<HashMap<String, String>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+            // 🆕 Ticket 13: 摘要开关 + 限流
+            let summary_enabled = Arc::new(AtomicBool::new(true));
+            let summary_semaphore = Arc::new(Semaphore::new(1));
 
             // Task System: 长期任务管理器（在 AppState 注册后初始化，需要 AppHandle）
             // 注意：此处用一个临时 handle，正式 handle 在 setup 完成后获取
@@ -175,6 +185,7 @@ pub fn run() {
                 task_store.clone(),
                 tool_registry.clone(),
                 agent_pending.clone(),
+                confirm_channels.clone(),  // 🆕 Ticket 02
                 llm_cfg_arc.clone(),
                 app.handle().clone(),
             ));
@@ -209,10 +220,14 @@ pub fn run() {
                 pending_tools: pending_tools.clone(),
                 tool_registry: tool_registry.clone(),
                 agent_pending: agent_pending.clone(),
+                confirm_channels: confirm_channels.clone(),  // 🆕 Ticket 02
                 task_manager:  task_manager.clone(),
                 vault_root:    vault_root_path.clone(),
                 sandbox:       sandbox.clone(),
                 chat_cancel:   chat_cancel.clone(),
+                system_prompt_cache: system_prompt_cache.clone(),  // 🆕 Ticket 03
+                summary_enabled: summary_enabled.clone(),  // 🆕 Ticket 13
+                summary_semaphore: summary_semaphore.clone(),  // 🆕 Ticket 13
             });
 
             // ── 6. P2: 系统托盘 ───────────────────────────────────────────────
@@ -332,6 +347,9 @@ pub fn run() {
             // 沙盒路径配置
             get_sandbox_paths,
             set_sandbox_paths,
+            // 🆕 Ticket 13: 摘要开关
+            get_summary_enabled,
+            set_summary_enabled,
             // 工具配置管理
             get_tool_configs,
             update_tool_config,

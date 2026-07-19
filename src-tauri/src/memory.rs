@@ -39,20 +39,70 @@ const SUMMARIZE_EVERY: i64 = 10;
 // ─── v1 兼容接口（已有代码引用） ─────────────────────────────────────────────
 
 /// 从数据库加载最近 N 条消息，转换为 LLM 消息格式（不含 system）
+/// 🆕 Ticket 06: 修复不完整的 tool_call/tool_result 配对
 pub async fn load_history_for_context(
     pool:       &SqlitePool,
     session_id: &str,
     limit:      i64,
 ) -> Result<Vec<LlmMessage>> {
     let msgs = episode_store::get_messages(pool, session_id, limit).await?;
-    Ok(msgs
+    let mut result: Vec<LlmMessage> = msgs
         .iter()
         .filter(|m| m.role == "user" || m.role == "assistant")
         .map(|m| LlmMessage {
             role:    m.role.clone(),
             content: m.content.clone(),
         })
-        .collect())
+        .collect();
+
+    // 🆕 Ticket 06: 修复不完整的工具调用链
+    repair_tool_chain(&mut result);
+
+    Ok(result)
+}
+
+/// 🆕 Ticket 06: 修复消息序列中的不完整工具调用
+/// - 删除开头没有对应 tool_call 的孤立 tool_result
+/// - 截断结尾没有 tool_result 的未完成 tool_call
+fn repair_tool_chain(messages: &mut Vec<LlmMessage>) {
+    if messages.is_empty() { return; }
+
+    // ── 1. 删除开头的孤立 tool_result ──────────────────────────────────
+    while !messages.is_empty() {
+        if messages[0].role == "tool" {
+            messages.remove(0);
+        } else {
+            break;
+        }
+    }
+
+    // ── 2. 修复结尾的不完整 tool_call ──────────────────────────────────
+    if let Some(last) = messages.last() {
+        if last.role == "assistant" {
+            let content = &last.content;
+            // 检测是否包含未完成的 <tool_call>
+            let has_open = content.contains("<tool_call>");
+            let has_close = content.contains("</tool_call>");
+            
+            if has_open && !has_close {
+                // 不完整的 tool_call — 移除整个消息
+                messages.pop();
+            } else if has_open {
+                // 完整的 XML 但工具结果可能丢失 — 保留但截断
+                // 统计 <tool_call> 出现次数
+                let call_count = content.matches("<tool_call>").count();
+                let close_count = content.matches("</tool_call>").count();
+                if call_count > close_count {
+                    // 部分 tool_call 未闭合 — 移除整个消息
+                    messages.pop();
+                }
+                // 如果配对完整，保留（工具结果丢失的情况 LLM 可以处理）
+            }
+        }
+    }
+
+    // ── 3. 确保 system 角色始终在首位（如果有） ────────────────────────
+    // load_history_for_context 不包含 system 消息，此步是预防性的
 }
 
 /// 获取全部聊天记录（供前端历史页面展示）

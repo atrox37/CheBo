@@ -6,11 +6,17 @@ import { extractEmotionFromText, stripEmotionForDisplay } from '@/utils/emotionT
 /** 单条消息的结构 */
 export interface ChatMessage {
   id:        string
-  role:      'user' | 'assistant'
+  role:      'user' | 'assistant' | 'confirm'
   content:   string
   emotion?:  string
   motion?:   string
   timestamp: number
+  /** 🆕 Ticket 10: 工具确认数据 */
+  confirmToken?:  string
+  confirmTool?:   string
+  confirmArgs?:   string
+  confirmLevel?:  number
+  confirmResolved?: boolean
 }
 
 /** 处于生成中的 Agent 状态 */
@@ -44,6 +50,9 @@ export const useChatStore = defineStore('chat', () => {
   const petBubbleVisible = ref(false)
   const PET_BUBBLE_LINGER_MS = 3500
   let petBubbleDismissTimer: ReturnType<typeof setTimeout> | null = null
+
+  // 🆕 Ticket 11: 排队消息（生成中时用户发送的消息）
+  const queuedMessages = ref<Array<{ id: string; text: string; timestamp: number }>>([])
 
   const bubblePinned = computed(() =>
     toolConfirmOpen.value || agentState.value === 'waitingConfirm'
@@ -268,6 +277,48 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearMessages() { messages.value = [] }
 
+  // 🆕 Ticket 11: 排队消息管理
+  function addQueuedMessage(text: string): string {
+    const id = crypto.randomUUID()
+    queuedMessages.value.push({ id, text, timestamp: Date.now() })
+    return id
+  }
+  function removeQueuedMessage(id: string) {
+    queuedMessages.value = queuedMessages.value.filter(m => m.id !== id)
+  }
+  function clearQueuedMessages() {
+    queuedMessages.value = []
+  }
+
+  // 🆕 Ticket 10: 内嵌工具确认消息
+  function addToolConfirmMessage(payload: {
+    token: string; tool: string; args: string; level: number
+  }) {
+    const id = crypto.randomUUID()
+    messages.value.push({
+      id, role: 'confirm',
+      content: `Chebo 想执行: ${payload.tool}\n${payload.args.slice(0, 200)}`,
+      timestamp: Date.now(),
+      confirmToken: payload.token,
+      confirmTool: payload.tool,
+      confirmArgs: payload.args,
+      confirmLevel: payload.level,
+      confirmResolved: false,
+    })
+    setToolConfirmOpen(true)
+  }
+
+  function resolveToolConfirm(token: string, approved: boolean) {
+    const msg = messages.value.find(m => m.confirmToken === token)
+    if (msg) {
+      msg.confirmResolved = true
+      msg.content = approved
+        ? `✅ 已执行: ${msg.confirmTool}`
+        : `❌ 已取消: ${msg.confirmTool}`
+    }
+    setToolConfirmOpen(false)
+  }
+
   return {
     messages, isConnected, isTyping, isGenerating, isSpeaking, isTalkingVisual,
     streamBuffer, currentEmotion, latestAssistantMessage,
@@ -277,5 +328,7 @@ export const useChatStore = defineStore('chat', () => {
     setSpeechPresentation, beginSpeakHold, endSpeakHold,
     showPetBubble, hidePetBubble, setToolConfirmOpen,
     clearMessages, setAgentState, setEmotion,
+    addToolConfirmMessage, resolveToolConfirm,  // 🆕 Ticket 10
+    queuedMessages, addQueuedMessage, removeQueuedMessage, clearQueuedMessages,  // 🆕 Ticket 11
   }
 })

@@ -192,6 +192,25 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    // 🆕 Ticket 04: FTS5 全文索引（跨会话快速检索）
+    sqlx::query(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
+            content,
+            session_id UNINDEXED,
+            tokenize='unicode61'
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    // 从已有消息填充 FTS5（幂等：INSERT OR IGNORE 避免重复）
+    sqlx::query(
+        "INSERT OR IGNORE INTO message_fts(rowid, content, session_id)
+         SELECT id, content, session_id FROM messages"
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS config (
             key         TEXT PRIMARY KEY,
@@ -303,11 +322,20 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
             msg_start_id INTEGER NOT NULL DEFAULT 0,
             msg_end_id   INTEGER NOT NULL DEFAULT 0,
             summary      TEXT    NOT NULL,
-            created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            source_session_id TEXT,     -- 🆕 Ticket 05: provenance
+            source_msg_id     INTEGER,  -- 🆕 Ticket 05: provenance
+            extracted_at      TEXT,     -- 🆕 Ticket 05: provenance
+            extraction_method TEXT      -- 🆕 Ticket 05: provenance (llm/heuristic/user_explicit)
         )",
     )
     .execute(pool)
     .await?;
+    // 🆕 Ticket 05: 为旧表补充 provenance 列
+    let _ = sqlx::query("ALTER TABLE memory_summaries ADD COLUMN source_session_id TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE memory_summaries ADD COLUMN source_msg_id INTEGER").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE memory_summaries ADD COLUMN extracted_at TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE memory_summaries ADD COLUMN extraction_method TEXT").execute(pool).await;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_summaries_session
@@ -334,6 +362,13 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
         .execute(pool).await;
     let _ = sqlx::query("ALTER TABLE user_profile ADD COLUMN source TEXT NOT NULL DEFAULT 'auto'")
         .execute(pool).await;
+    // 🆕 Ticket 05: provenance 列
+    let _ = sqlx::query("ALTER TABLE user_profile ADD COLUMN source_session_id TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE user_profile ADD COLUMN source_msg_id INTEGER").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE user_profile ADD COLUMN extracted_at TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE user_profile ADD COLUMN extraction_method TEXT").execute(pool).await;
+    // 🆕 Ticket 08: 偏好类型（explicit = 显式偏好，situational = 情境偏好）
+    let _ = sqlx::query("ALTER TABLE user_profile ADD COLUMN preference_type TEXT DEFAULT 'situational'").execute(pool).await;
 
     // ── P0: 向量记忆索引表（embedding 存 BLOB，本地余弦检索）────────────────
     sqlx::query(
@@ -429,11 +464,20 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
             value      TEXT    NOT NULL,
             category   TEXT    NOT NULL DEFAULT 'trait',
             confidence REAL    NOT NULL DEFAULT 1.0,
-            updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            source_session_id TEXT,     -- 🆕 Ticket 05: provenance
+            source_msg_id     INTEGER,  -- 🆕 Ticket 05: provenance
+            extracted_at      TEXT,     -- 🆕 Ticket 05: provenance
+            extraction_method TEXT      -- 🆕 Ticket 05: provenance
         )",
     )
     .execute(pool)
     .await?;
+    // 🆕 Ticket 05: 为旧表补充 provenance 列
+    let _ = sqlx::query("ALTER TABLE persona_memory ADD COLUMN source_session_id TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE persona_memory ADD COLUMN source_msg_id INTEGER").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE persona_memory ADD COLUMN extracted_at TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE persona_memory ADD COLUMN extraction_method TEXT").execute(pool).await;
 
     // Chebo 初始人格记忆（只在首次初始化时插入）
     let persona_seeds = [

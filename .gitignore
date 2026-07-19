@@ -78,3 +78,7 @@ Desktop.ini
 
 # Cargo
 .cargo-target/
+# Agent skills (installed via npx skills add)
+.agents/
+skills-lock.json
+

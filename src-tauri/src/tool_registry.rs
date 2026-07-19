@@ -781,6 +781,23 @@ impl Tool for MemoryRecallTool {
             results = memory_vector::recall_keyword(&self.pool, &query).await;
         }
 
+        // 🆕 Ticket 04: FTS5 全文检索作为补充通道
+        match crate::memory::episode_store::fts_search(&self.pool, &query, "__fts_all__", 5).await {
+            Ok(fts_hits) if !fts_hits.is_empty() => {
+                let fts_lines: Vec<String> = fts_hits
+                    .iter()
+                    .map(|r| format!("  [历史] {}", r.content_snippet))
+                    .collect();
+                if results.is_empty() {
+                    results = fts_lines;
+                } else {
+                    results.push("\n---\n跨会话历史记录：".to_string());
+                    results.extend(fts_lines);
+                }
+            }
+            _ => {}
+        }
+
         if results.is_empty() {
             ToolCallResult::ok(
                 id, self.name(), self.permission_level(),

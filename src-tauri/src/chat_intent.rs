@@ -627,6 +627,21 @@ fn looks_like_emotional_support(text: &str) -> bool {
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
+/// 🆕 Ticket 09: 按意图返回对话历史窗口大小
+pub fn history_window_size(intent: ChatIntent) -> i64 {
+    use ChatIntent::*;
+    match intent {
+        CasualChat       => 10,
+        EmotionalSupport => 10,
+        RememberRequest  => 15,
+        ToolOperation    => 20,
+        TechnicalQa      => 25,
+        ProjectReview    => 30,
+        ContinueTask     => 40,
+        DeepThink        => 50,
+    }
+}
+
 /// 兼容旧版 chat_router::should_run_agent_task（供外部调用）
 pub fn should_run_agent_task(content: &str, deep_think: bool) -> bool {
     let c = content.trim();

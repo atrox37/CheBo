@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Emitter;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
 use crate::tool_registry::ToolRegistry;
@@ -136,12 +136,13 @@ impl ToolDispatcher {
 
     /// 执行一批工具调用
     /// - L0/L1：直接执行
-    /// - L2/L3：插入 pending map，等待前端确认（返回 pending 状态）
+    /// - L2/L3：通过 oneshot channel 等待前端确认（不再轮询）
     pub async fn execute_all(
-        registry:     &ToolRegistry,
-        requests:     Vec<ToolCallRequest>,
-        pending_map:  &PendingMap,
-        app_handle:   Option<&tauri::AppHandle>,
+        registry:         &ToolRegistry,
+        requests:         Vec<ToolCallRequest>,
+        pending_map:      &PendingMap,
+        confirm_channels: &std::sync::Mutex<HashMap<String, oneshot::Sender<bool>>>,  // 🆕 Ticket 02
+        app_handle:       Option<&tauri::AppHandle>,
     ) -> Vec<ToolCallResult> {
         let mut results = Vec::new();
 
@@ -162,13 +163,13 @@ impl ToolDispatcher {
             let perm = tool.permission_level();
 
             if perm.needs_confirmation() {
-                // L2/L3：发给前端确认
+                // L2/L3：oneshot channel 替代轮询
                 let pending = PendingToolCall {
                     id:        req.id.clone(),
                     name:      req.name.clone(),
                     arguments: req.arguments.clone(),
-                    level:     perm as u8 + 2, // L2=2, L3=3
-                    approved:  None,
+                    level:     perm as u8 + 2,
+                    approved:  None,  // 保留兼容，但不再被轮询
                 };
 
                 {
@@ -176,13 +177,32 @@ impl ToolDispatcher {
                     map.insert(req.id.clone(), pending.clone());
                 }
 
+                // 🆕 创建 oneshot channel
+                let (tx, rx) = oneshot::channel::<bool>();
+                {
+                    let mut channels = confirm_channels.lock().unwrap();
+                    channels.insert(req.id.clone(), tx);
+                }
+
                 // 发送前端事件请求确认
                 if let Some(app) = app_handle {
                     let _ = app.emit("tool_call_pending", &pending);
                 }
 
-                // 等待用户确认（最多 30 秒）
-                let approved = wait_for_approval(&req.id, pending_map, 30).await;
+                // 🆕 等待 oneshot（30 秒超时 = 视为拒绝）
+                let approved = match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    rx,
+                ).await {
+                    Ok(Ok(v)) => v,
+                    _ => false, // 超时或 channel 关闭 = 拒绝
+                };
+
+                // 清理 channel
+                {
+                    let mut channels = confirm_channels.lock().unwrap();
+                    channels.remove(&req.id);
+                }
 
                 if approved {
                     let result = tool.execute(&req.id, req.arguments).await;
@@ -221,35 +241,7 @@ impl ToolDispatcher {
     }
 }
 
-// ─── 等待用户确认 ─────────────────────────────────────────────────────────────
-
-/// 轮询 pending_map 等待用户对某个工具调用作出决定（approved/rejected）
-/// 最多等待 timeout_secs 秒
-async fn wait_for_approval(
-    id:          &str,
-    pending_map: &PendingMap,
-    timeout_secs: u64,
-) -> bool {
-    let deadline = tokio::time::Instant::now()
-        + tokio::time::Duration::from_secs(timeout_secs);
-
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            return false; // 超时默认拒绝
-        }
-
-        {
-            let map = pending_map.lock().await;
-            if let Some(call) = map.get(id) {
-                if let Some(approved) = call.approved {
-                    return approved;
-                }
-            }
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-    }
-}
+// wait_for_approval 已删除（Ticket 02: oneshot 替代轮询）
 
 // ─── 构建工具调用历史 message ─────────────────────────────────────────────────
 

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;  // 🆕 Ticket 08
 use tauri::{AppHandle, Emitter, State};
 
 use crate::agent::AgentState;
@@ -44,6 +45,77 @@ pub async fn get_status(state: State<'_, AppState>) -> CmdResult<PetStatus> {
     db::get_pet_status(&state.pool).await.map_err(e)
 }
 
+// 🆕 Ticket 08: 加载显式偏好（注入 System Prompt）
+async fn load_explicit_preferences(pool: &SqlitePool) -> String {
+    match crate::memory::core_memory_store::get_explicit_preferences(pool).await {
+        Ok(prefs) if !prefs.is_empty() => {
+            let lines: Vec<String> = prefs
+                .iter()
+                .map(|e| format!("  · {} → {}", e.key, e.value))
+                .collect();
+            format!("【用户显式偏好】\n{}\n", lines.join("\n"))
+        }
+        _ => String::new(),
+    }
+}
+
+/// 🆕 Ticket 12: Microcompact — 压缩旧的工具结果消息
+/// 保留最近 3 条工具结果原文，更早的替换为摘要格式
+fn microcompact_tool_results(messages: &mut Vec<LlmMessage>) {
+    const KEEP_RECENT: usize = 3; // 保留最近 N 条工具结果原文
+    const MAX_CONTENT_LEN: usize = 100; // 摘要截断长度
+
+    let mut tool_result_indices: Vec<usize> = Vec::new();
+    for (i, msg) in messages.iter().enumerate() {
+        // 工具结果消息特征：user 角色且以特定模式开头
+        if msg.role == "user" && (msg.content.contains("【工具结果】") || msg.content.contains("tool_call")) {
+            tool_result_indices.push(i);
+        }
+    }
+
+    if tool_result_indices.len() <= KEEP_RECENT {
+        return; // 不够多，不需要压缩
+    }
+
+    // 压缩除最近 KEEP_RECENT 条之外的所有工具结果
+    let compact_count = tool_result_indices.len() - KEEP_RECENT;
+    for &idx in &tool_result_indices[..compact_count] {
+        let content = &messages[idx].content;
+        // 提取工具名和成功/失败状态
+        let summary = summarize_tool_result(content, MAX_CONTENT_LEN);
+        messages[idx].content = summary;
+    }
+}
+
+/// 从工具结果文本中提取摘要
+fn summarize_tool_result(content: &str, max_len: usize) -> String {
+    // 尝试识别工具名
+    let tool_name = if let Some(start) = content.find("【工具结果】") {
+        let rest = &content[start + 18..]; // skip "【工具结果】"
+        rest.lines().next().unwrap_or("").trim().to_string()
+    } else if let Some(start) = content.find("tool_call") {
+        "tool_call".to_string()
+    } else {
+        "工具".to_string()
+    };
+
+    let status = if content.contains("错误") || content.contains("失败") || content.contains("Error") {
+        "失败"
+    } else {
+        "成功"
+    };
+
+    // 提取第一行有意义的内容作为摘要
+    let first_line = content.lines()
+        .find(|l| !l.is_empty() && !l.starts_with("【"))
+        .unwrap_or("")
+        .chars()
+        .take(max_len)
+        .collect::<String>();
+
+    format!("[工具 {} 已执行: {}] {}", tool_name, status, first_line)
+}
+
 // ─── 聊天 / 发消息（Tool Registry + Dispatcher 工具循环） ────────────────────
 
 #[tauri::command]
@@ -73,7 +145,10 @@ pub async fn send_message(
     let event_bus     = state.event_bus.clone();
     let tool_registry = state.tool_registry.clone();
     let agent_pending = state.agent_pending.clone();
-    let max_hist      = state.config.max_history_messages;
+    let confirm_channels = state.confirm_channels.clone(); // 🆕 Ticket 02
+    let system_prompt_cache = state.system_prompt_cache.clone(); // 🆕 Ticket 03
+    let summary_enabled = state.summary_enabled.clone();  // 🆕 Ticket 13
+    let summary_sem = state.summary_semaphore.clone();     // 🆕 Ticket 13
     let chat_cancel   = state.chat_cancel.clone();
     let deep_think    = deep_think.unwrap_or(false);
     let assistant_mode_flag = assistant_mode.unwrap_or(false);
@@ -229,7 +304,9 @@ pub async fn send_message(
         };
 
         // ── 1. 构建初始 messages ──────────────────────────────────────────────
-        let history = memory::load_history_for_context(&pool, &session_id, max_hist as i64)
+        // 🆕 Ticket 09: 按意图动态对话窗口
+        let history_window = chat_intent::history_window_size(intent_decision.intent);
+        let history = memory::load_history_for_context(&pool, &session_id, history_window)
             .await
             .unwrap_or_default();
 
@@ -253,23 +330,6 @@ pub async fn send_message(
 
         let tool_block = tool_registry.tools_prompt_block_for(&content, &[]);
 
-        let system = if deep_think_flag {
-            format!(
-                "{}\n\n{}\n\n{}\n\n{}",
-                build_system_prompt(&status, !assistant_mode),
-                mem_ctx,
-                chat_intent::DEEP_THINK_SYSTEM_ADDITION,
-                tool_block
-            )
-        } else {
-            format!(
-                "{}\n\n{}\n\n{}",
-                build_system_prompt(&status, !assistant_mode),
-                mem_ctx,
-                tool_block
-            )
-        };
-
         let max_tool_turns = if deep_think_flag {
             chat_intent::DEEP_THINK_MAX_TOOL_TURNS
         } else {
@@ -283,9 +343,36 @@ pub async fn send_message(
             format!("{}{}", content, vision_note)
         };
 
+        // 🆕 Ticket 03+08: System Prompt 冻结（会话级别缓存）
+        let system = {
+            let cached = system_prompt_cache.lock().unwrap().get(&session_id).cloned();
+            if let Some(cached) = cached {
+                cached
+            } else {
+                // 🆕 Ticket 08: 显式偏好（在 spawn 外预计算）
+                let frozen = format!(
+                    "{}\n\n{}",
+                    build_system_prompt(&status, !assistant_mode),
+                    if deep_think_flag {
+                        format!("\n\n{}\n\n{}", tool_block, chat_intent::DEEP_THINK_SYSTEM_ADDITION)
+                    } else {
+                        format!("\n\n{}", tool_block)
+                    }
+                );
+                system_prompt_cache.lock().unwrap().insert(session_id.clone(), frozen.clone());
+                frozen
+            }
+        };
+
         let mut messages = vec![LlmMessage::system(&system)];
         messages.extend(history);
-        messages.push(LlmMessage::user(&user_text));
+        // 🆕 Ticket 03: 动态内容（ContextPack）放入 User Message 前缀
+        let user_with_context = if mem_ctx.is_empty() {
+            user_text
+        } else {
+            format!("{}\n\n{}", mem_ctx, user_text)
+        };
+        messages.push(LlmMessage::user(&user_with_context));
 
         // ── Phase B: 复杂请求预规划 ─────────────────────────────────────
         if planner::should_plan(intent_decision.intent) {
@@ -380,6 +467,7 @@ pub async fn send_message(
                         &tool_registry,
                         tool_calls,
                         &agent_pending,
+                        &confirm_channels,  // 🆕 Ticket 02
                         Some(&app),
                     )
                     .await;
@@ -400,6 +488,9 @@ pub async fn send_message(
 
                     let tool_result_text = ToolDispatcher::format_results_as_message(&results);
                     messages.push(LlmMessage::user(&tool_result_text));
+
+                    // 🆕 Ticket 12: Microcompact — 压缩旧工具结果
+                    microcompact_tool_results(&mut messages);
 
                     // ── Reflection: 分析工具结果后再决策 ──────────────────
                     messages.push(LlmMessage::system(
@@ -491,8 +582,11 @@ pub async fn send_message(
         let sid_mc  = session_id.clone();
         let decision_mc = intent_decision.clone();
         tauri::async_runtime::spawn(async move {
-            // 摘要（每10条）
-            memory::maybe_summarize(&pool3, &cfg3, &sid3).await;
+            // 🆕 Ticket 13: 检查开关 + 限流
+            if summary_enabled.load(Ordering::Relaxed) {
+                let _permit = summary_sem.acquire().await;
+                memory::maybe_summarize(&pool3, &cfg3, &sid3).await;
+            }
 
             // Working Memory 更新（仅在必要场景触发）
             if working_memory::should_update(&decision_wm, &content) {
@@ -691,6 +785,17 @@ pub async fn set_sandbox_paths(
     Ok(())
 }
 
+// 🆕 Ticket 13: 摘要开关
+#[tauri::command]
+pub fn get_summary_enabled(state: State<'_, AppState>) -> bool {
+    state.summary_enabled.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+pub fn set_summary_enabled(state: State<'_, AppState>, enabled: bool) {
+    state.summary_enabled.store(enabled, Ordering::Relaxed);
+}
+
 // ─── Provider 能力注册表查询 ──────────────────────────────────────────────────
 
 /// 查询单个模型的能力（未知模型返回推断值）
@@ -884,13 +989,27 @@ pub async fn confirm_tool_call(
     token:   String,
     confirm: bool,
 ) -> CmdResult<ToolResult> {
+    // 🆕 Ticket 02: 优先通过 oneshot channel 发送确认结果
+    {
+        let mut channels = state.confirm_channels.lock().map_err(|e| e.to_string())?;
+        if let Some(tx) = channels.remove(&token) {
+            let _ = tx.send(confirm);
+        }
+    }
+
     let pending = state.pending_tools.lock()
         .map_err(|e| e.to_string())?
         .remove(&token);
 
+    // 🆕 如果通过 oneshot 处理了（token 不在 pending_tools 中），直接返回
     let pending = match pending {
         Some(p) => p,
-        None    => return Err(format!("确认令牌已过期或不存在: {token}")),
+        None    => return Ok(ToolResult {
+            tool:    "unknown".to_string(),
+            success: confirm,
+            content: if confirm { "已确认执行".to_string() } else { "已取消".to_string() },
+            level:   2,
+        }),
     };
 
     if !confirm {
@@ -1173,6 +1292,10 @@ pub async fn get_memory_summaries(
         msg_end_id:   r.get("msg_end_id"),
         summary:      r.get("summary"),
         created_at:   r.get("created_at"),
+        source_session_id: r.try_get("source_session_id").ok().flatten(),
+        source_msg_id:     r.try_get("source_msg_id").ok().flatten(),
+        extracted_at:      r.try_get("extracted_at").ok().flatten(),
+        extraction_method: r.try_get("extraction_method").ok().flatten(),
     }).collect())
 }
 
