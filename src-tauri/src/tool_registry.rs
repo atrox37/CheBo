@@ -1039,7 +1039,7 @@ impl Tool for NoteTakeTool {
         match action.as_str() {
             "create" | "update" => {
                 if content.is_empty() { return ToolCallResult::err(id, self.name(), self.permission_level(), "create/update 需要 content 参数"); }
-                match crate::db::set_user_profile(&self.pool, &format!("note:{}", key), &content).await {
+                match crate::memory::core_memory_store::set_user_profile(&self.pool, &format!("note:{}", key), &content).await {
                     Ok(_) => ToolCallResult::ok(id, self.name(), self.permission_level(), format!("笔记「{key}」已保存")),
                     Err(e) => ToolCallResult::err(id, self.name(), self.permission_level(), &e.to_string()),
                 }
@@ -1052,7 +1052,7 @@ impl Tool for NoteTakeTool {
                 }
             }
             "delete" => {
-                match crate::db::delete_user_profile_entry(&self.pool, &format!("note:{}", key)).await {
+                match crate::memory::core_memory_store::delete_user_profile_entry(&self.pool, &format!("note:{}", key)).await {
                     Ok(_) => ToolCallResult::ok(id, self.name(), self.permission_level(), format!("笔记「{key}」已删除")),
                     Err(e) => ToolCallResult::err(id, self.name(), self.permission_level(), &e.to_string()),
                 }

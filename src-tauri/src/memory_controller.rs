@@ -349,16 +349,16 @@ async fn persist_candidate(
     match target {
         "user_profile" => {
             if let Some(key) = &candidate.key {
-                db::set_user_profile(pool, key, &candidate.content).await?;
+                crate::memory::core_memory_store::set_user_profile(pool, key, &candidate.content).await?;
             } else {
                 // 无 key 的 Episode/自由文本，自动生成 key
                 let key = format!("epi_{}", candidate.content.chars().take(10).collect::<String>());
-                db::set_user_profile(pool, &key, &candidate.content).await?;
+                crate::memory::core_memory_store::set_user_profile(pool, &key, &candidate.content).await?;
             }
         }
         "persona_memory" => {
             if let Some(key) = &candidate.key {
-                db::upsert_persona_memory(
+                crate::memory::core_memory_store::upsert_persona_memory(
                     pool,
                     key,
                     &candidate.content,

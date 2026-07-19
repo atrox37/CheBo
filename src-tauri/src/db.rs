@@ -59,16 +59,12 @@ pub struct Task {
     pub enabled: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub id: i64,
-    pub session_id: String,
-    pub role: String,
-    pub content: String,
-    pub emotion: Option<String>,
-    pub motion: Option<String>,
-    pub created_at: String,
-}
+// Message 和 MemorySummary 已迁移到 memory::episode_store
+pub use crate::memory::episode_store::{Message, MemorySummary};
+// UserProfileEntry 和 PersonaMemory 已迁移到 memory::core_memory_store
+pub use crate::memory::core_memory_store::{UserProfileEntry, PersonaMemory};
+
+// MemorySummary 已通过上方 re-export 统一为 episode_store::MemorySummary
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InventoryItem {
@@ -86,38 +82,7 @@ pub struct Memory {
     pub created_at: String,
 }
 
-/// P0: 对话摘要（每 20 条消息生成一次，由 LLM 自动产出）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemorySummary {
-    pub id:           i64,
-    pub session_id:   String,
-    pub msg_start_id: i64,
-    pub msg_end_id:   i64,
-    pub summary:      String,
-    pub created_at:   String,
-}
-
-/// P0: 用户画像键值对（从对话中提取的持久化用户信息）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserProfileEntry {
-    pub key:        String,
-    pub value:      String,
-    /// 置信度 0.0–1.0（1.0=用户明确确认，0.5=LLM推断，0.3=临时性陈述）
-    pub confidence: f64,
-    /// 来源：'auto'=自动提取 | 'user'=用户手动设置 | 'inferred'=LLM推断
-    pub source:     String,
-    pub updated_at: String,
-}
-
-/// Batch D: 人格记忆条目（Chebo 自身的性格/经历/关系/情绪历史）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersonaMemory {
-    pub key:        String,
-    pub value:      String,
-    pub category:   String,
-    pub confidence: f64,
-    pub updated_at: String,
-}
+// UserProfileEntry 和 PersonaMemory 已通过上方 re-export 统一
 
 // ── Memory Tree / Vault 数据结构 ──────────────────────────────────────────────
 
@@ -839,84 +804,7 @@ pub async fn get_task(pool: &SqlitePool, task_id: &str) -> Result<Option<Task>> 
     }))
 }
 
-// ─── messages CRUD ───────────────────────────────────────────────────────────
-
-pub async fn save_message(
-    pool: &SqlitePool,
-    session_id: &str,
-    role: &str,
-    content: &str,
-    emotion: Option<&str>,
-    motion: Option<&str>,
-) -> Result<i64> {
-    let row = sqlx::query(
-        "INSERT INTO messages (session_id, role, content, emotion, motion)
-         VALUES (?, ?, ?, ?, ?)
-         RETURNING id",
-    )
-    .bind(session_id)
-    .bind(role)
-    .bind(content)
-    .bind(emotion)
-    .bind(motion)
-    .fetch_one(pool)
-    .await?;
-
-    Ok(row.get("id"))
-}
-
-pub async fn get_messages(
-    pool: &SqlitePool,
-    session_id: &str,
-    limit: i64,
-) -> Result<Vec<Message>> {
-    let rows = sqlx::query(
-        "SELECT id, session_id, role, content, emotion, motion, created_at
-         FROM messages WHERE session_id=?
-         ORDER BY id DESC LIMIT ?",
-    )
-    .bind(session_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-
-    let mut msgs: Vec<Message> = rows
-        .iter()
-        .map(|r| Message {
-            id:         r.get("id"),
-            session_id: r.get("session_id"),
-            role:       r.get("role"),
-            content:    r.get("content"),
-            emotion:    r.get("emotion"),
-            motion:     r.get("motion"),
-            created_at: r.get("created_at"),
-        })
-        .collect();
-    msgs.reverse(); // 时间升序
-    Ok(msgs)
-}
-
-pub async fn get_all_messages(pool: &SqlitePool) -> Result<Vec<Message>> {
-    let rows = sqlx::query(
-        "SELECT id, session_id, role, content, emotion, motion, created_at
-         FROM messages ORDER BY id ASC",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| Message {
-            id:         r.get("id"),
-            session_id: r.get("session_id"),
-            role:       r.get("role"),
-            content:    r.get("content"),
-            emotion:    r.get("emotion"),
-            motion:     r.get("motion"),
-            created_at: r.get("created_at"),
-        })
-        .collect())
-}
+// messages CRUD 已迁移到 memory::episode_store
 
 // ─── inventory CRUD ──────────────────────────────────────────────────────────
 
@@ -974,12 +862,7 @@ pub async fn consume_inventory(pool: &SqlitePool, item_id: &str) -> Result<bool>
     }
 }
 
-// ─── 用户画像全局读取（替代旧的 long_term_memories 全局查询） ──────────────
-
-/// 跨会话读取用户画像全部条目
-pub async fn get_all_profile_entries(pool: &SqlitePool, limit: i64) -> Result<Vec<UserProfileEntry>> {
-    get_user_profile_all(pool).await.map(|v| v.into_iter().take(limit as usize).collect())
-}
+// user_profile CRUD 已迁移到 memory::core_memory_store
 
 // ─── config 键值表 ───────────────────────────────────────────────────────────
 
@@ -1004,310 +887,8 @@ pub async fn set_config(pool: &SqlitePool, key: &str, value: &str) -> Result<()>
     Ok(())
 }
 
-// ─── P0: memory_summaries CRUD ───────────────────────────────────────────────
-
-/// 保存一条对话摘要
-pub async fn save_summary(
-    pool:         &SqlitePool,
-    session_id:   &str,
-    msg_start_id: i64,
-    msg_end_id:   i64,
-    summary:      &str,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO memory_summaries (session_id, msg_start_id, msg_end_id, summary)
-         VALUES (?, ?, ?, ?)",
-    )
-    .bind(session_id)
-    .bind(msg_start_id)
-    .bind(msg_end_id)
-    .bind(summary)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// 获取最近 N 条摘要（时间降序）
-pub async fn get_summaries(pool: &SqlitePool, limit: i64) -> Result<Vec<MemorySummary>> {
-    let rows = sqlx::query(
-        "SELECT id, session_id, msg_start_id, msg_end_id, summary, created_at
-         FROM memory_summaries ORDER BY id DESC LIMIT ?",
-    )
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| MemorySummary {
-            id:           r.get("id"),
-            session_id:   r.get("session_id"),
-            msg_start_id: r.get("msg_start_id"),
-            msg_end_id:   r.get("msg_end_id"),
-            summary:      r.get("summary"),
-            created_at:   r.get("created_at"),
-        })
-        .collect())
-}
-
-/// 获取某 session 的最后一条摘要覆盖到的 msg_end_id（用于增量摘要）
-pub async fn get_last_summarized_msg_id(pool: &SqlitePool, session_id: &str) -> Result<i64> {
-    let row = sqlx::query(
-        "SELECT COALESCE(MAX(msg_end_id), 0) AS last_id
-         FROM memory_summaries WHERE session_id=?",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(row.get("last_id"))
-}
-
-/// 统计某 session 从指定 msg_id 之后的消息条数
-pub async fn count_messages_after(pool: &SqlitePool, session_id: &str, after_id: i64) -> Result<i64> {
-    let row = sqlx::query(
-        "SELECT COUNT(*) AS cnt FROM messages WHERE session_id=? AND id>?",
-    )
-    .bind(session_id)
-    .bind(after_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(row.get("cnt"))
-}
-
-/// 获取某 session 在 [start_id, end_id] 范围内的消息（用于摘要生成）
-pub async fn get_messages_in_range(
-    pool:       &SqlitePool,
-    session_id: &str,
-    start_id:   i64,
-    end_id:     i64,
-) -> Result<Vec<Message>> {
-    let rows = sqlx::query(
-        "SELECT id, session_id, role, content, emotion, motion, created_at
-         FROM messages WHERE session_id=? AND id>? AND id<=?
-         ORDER BY id ASC",
-    )
-    .bind(session_id)
-    .bind(start_id)
-    .bind(end_id)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| Message {
-            id:         r.get("id"),
-            session_id: r.get("session_id"),
-            role:       r.get("role"),
-            content:    r.get("content"),
-            emotion:    r.get("emotion"),
-            motion:     r.get("motion"),
-            created_at: r.get("created_at"),
-        })
-        .collect())
-}
-
-/// 获取某 session 最新的消息 ID
-pub async fn get_latest_message_id(pool: &SqlitePool, session_id: &str) -> Result<i64> {
-    let row = sqlx::query(
-        "SELECT COALESCE(MAX(id), 0) AS max_id FROM messages WHERE session_id=?",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(row.get("max_id"))
-}
-
-// ─── P0: user_profile CRUD ───────────────────────────────────────────────────
-
-/// 设置用户画像键值（upsert）
-pub async fn set_user_profile(pool: &SqlitePool, key: &str, value: &str) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO user_profile (key, value)
-         VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value=?, updated_at=datetime('now','localtime')",
-    )
-    .bind(key)
-    .bind(value)
-    .bind(value)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// 获取全部用户画像条目
-pub async fn get_user_profile_all(pool: &SqlitePool) -> Result<Vec<UserProfileEntry>> {
-    let rows = sqlx::query(
-        "SELECT key, value, confidence, source, updated_at
-         FROM user_profile ORDER BY updated_at DESC",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| UserProfileEntry {
-            key:        r.get("key"),
-            value:      r.get("value"),
-            confidence: r.get::<f64, _>("confidence"),
-            source:     r.get("source"),
-            updated_at: r.get("updated_at"),
-        })
-        .collect())
-}
-
-/// 删除用户画像中的某条记忆
-pub async fn delete_user_profile_entry(pool: &SqlitePool, key: &str) -> Result<()> {
-    sqlx::query("DELETE FROM user_profile WHERE key = ?")
-        .bind(key)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-/// 更新用户画像条目（用户手动纠正）
-pub async fn update_user_profile_entry(
-    pool:  &SqlitePool,
-    key:   &str,
-    value: &str,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO user_profile (key, value, confidence, source, updated_at)
-         VALUES (?, ?, 1.0, 'user', datetime('now','localtime'))
-         ON CONFLICT(key) DO UPDATE SET
-           value = excluded.value,
-           confidence = 1.0,
-           source = 'user',
-           updated_at = excluded.updated_at"
-    )
-    .bind(key)
-    .bind(value)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-// ─── P0: 关键词搜索长期记忆 ──────────────────────────────────────────────────
-
-/// 按关键词搜索记忆内容（返回匹配的 content 列表，按时间降序）
-pub async fn search_memories_by_keyword(
-    pool:    &SqlitePool,
-    keyword: &str,
-    limit:   i64,
-) -> Result<Vec<String>> {
-    let pattern = format!("%{keyword}%");
-    let rows = sqlx::query(
-        "SELECT value FROM user_profile
-         WHERE value LIKE ? OR key LIKE ?
-         ORDER BY updated_at DESC LIMIT ?",
-    )
-    .bind(&pattern)
-    .bind(&pattern)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows.iter().map(|r| r.get::<String, _>("value")).collect())
-}
-
-// ─── Batch D: persona_memory CRUD ────────────────────────────────────────────
-
-/// 写入或更新一条人格记忆（upsert by key）
-pub async fn upsert_persona_memory(
-    pool:       &SqlitePool,
-    key:        &str,
-    value:      &str,
-    category:   &str,
-    confidence: f64,
-) -> Result<()> {
-    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    sqlx::query(
-        "INSERT INTO persona_memory (key, value, category, confidence, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET
-             value      = excluded.value,
-             category   = excluded.category,
-             confidence = excluded.confidence,
-             updated_at = excluded.updated_at",
-    )
-    .bind(key)
-    .bind(value)
-    .bind(category)
-    .bind(confidence)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// 读取所有人格记忆（按置信度降序）
-pub async fn get_persona_memory_all(pool: &SqlitePool) -> Result<Vec<PersonaMemory>> {
-    let rows = sqlx::query(
-        "SELECT key, value, category, confidence, updated_at
-         FROM persona_memory
-         ORDER BY confidence DESC",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| PersonaMemory {
-            key:        r.get("key"),
-            value:      r.get("value"),
-            category:   r.get("category"),
-            confidence: r.get("confidence"),
-            updated_at: r.get("updated_at"),
-        })
-        .collect())
-}
-
-/// 读取指定分类的人格记忆（过滤低置信度）
-pub async fn get_persona_memory_by_category(
-    pool:     &SqlitePool,
-    category: &str,
-    min_conf: f64,
-) -> Result<Vec<PersonaMemory>> {
-    let rows = sqlx::query(
-        "SELECT key, value, category, confidence, updated_at
-         FROM persona_memory
-         WHERE category = ? AND confidence >= ?
-         ORDER BY confidence DESC",
-    )
-    .bind(category)
-    .bind(min_conf)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| PersonaMemory {
-            key:        r.get("key"),
-            value:      r.get("value"),
-            category:   r.get("category"),
-            confidence: r.get("confidence"),
-            updated_at: r.get("updated_at"),
-        })
-        .collect())
-}
-
-/// 降低旧记忆的置信度（冲突消解：写入新记忆时对旧值衰减）
-pub async fn decay_persona_confidence(
-    pool:       &SqlitePool,
-    key:        &str,
-    decay_rate: f64,  // e.g. 0.2 表示降低 20%
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE persona_memory
-         SET confidence = MAX(0.0, confidence - ?),
-             updated_at = datetime('now','localtime')
-         WHERE key = ?",
-    )
-    .bind(decay_rate)
-    .bind(key)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
+// memory_summaries / user_profile / persona_memory CRUD 已迁移到
+//   memory::episode_store 和 memory::core_memory_store
 
 /// 长期记忆写入（附置信度过滤）：仅在置信度 >= 0.7 时才写入
 // ─── Memory Tree / Vault CRUD ─────────────────────────────────────────────────
@@ -1486,48 +1067,7 @@ pub async fn get_vault_stats(pool: &SqlitePool, vault_path: &str) -> Result<Vaul
     })
 }
 
-/// 获取自某个 chunk id 之后的所有消息（用于增量处理）
-pub async fn get_messages_after_chunk(
-    pool:          &SqlitePool,
-    session_id:    &str,
-    after_msg_id:  i64,
-    limit:         i64,
-) -> Result<Vec<Message>> {
-    let rows = sqlx::query(
-        "SELECT id, session_id, role, content, emotion, motion, created_at
-         FROM messages
-         WHERE session_id = ? AND id > ? AND role IN ('user','assistant')
-         ORDER BY id ASC LIMIT ?",
-    )
-    .bind(session_id)
-    .bind(after_msg_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| Message {
-            id:         r.get("id"),
-            session_id: r.get("session_id"),
-            role:       r.get("role"),
-            content:    r.get("content"),
-            emotion:    r.get("emotion"),
-            motion:     r.get("motion"),
-            created_at: r.get("created_at"),
-        })
-        .collect())
-}
-
-/// 获取所有 session_id（去重，供 vault 遍历所有会话）
-pub async fn get_all_session_ids(pool: &SqlitePool) -> Result<Vec<String>> {
-    let rows = sqlx::query(
-        "SELECT DISTINCT session_id FROM messages ORDER BY session_id",
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.iter().map(|r| r.get::<String, _>("session_id")).collect())
-}
+// messages 增量查询和 session 列表已迁移到 memory::episode_store
 
 // ─── P0: memory_vectors CRUD ─────────────────────────────────────────────────
 

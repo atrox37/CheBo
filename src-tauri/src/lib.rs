@@ -399,7 +399,7 @@ async fn start_vault_sync_loop(
         log::info!("Vault 开始增量同步...");
 
         // 获取所有 session_id
-        let session_ids = match db::get_all_session_ids(&pool).await {
+        let session_ids = match crate::memory::episode_store::get_all_session_ids(&pool).await {
             Ok(ids) => ids,
             Err(e) => {
                 log::warn!("vault_sync: 获取 session ids 失败: {e}");

@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use sqlx::{Row, SqlitePool};
 
-use crate::db::{self, Message};
+use crate::db;
+use crate::memory::episode_store::Message;
 use crate::llm::{LlmConfig, LlmMessage};
 use crate::vault;
 
@@ -41,7 +42,7 @@ pub async fn sync_session(
     let last_processed_msg_id = get_last_processed_msg_id(pool, session_id).await;
 
     // 获取新消息
-    let new_msgs = match db::get_messages_after_chunk(
+    let new_msgs = match crate::memory::episode_store::get_messages_after_chunk(
         pool,
         session_id,
         last_processed_msg_id,
@@ -78,7 +79,7 @@ pub async fn sync_session(
 /// 更新 Vault 中的 Memories 目录（用户画像 + 人格记忆）
 pub async fn sync_memories(pool: &SqlitePool, vault_root: &Path) {
     // 用户画像
-    if let Ok(profile) = db::get_user_profile_all(pool).await {
+    if let Ok(profile) = crate::memory::core_memory_store::get_user_profile_all(pool).await {
         let entries: Vec<(String, String)> = profile
             .iter()
             .map(|e| (e.key.clone(), e.value.clone()))
@@ -89,7 +90,7 @@ pub async fn sync_memories(pool: &SqlitePool, vault_root: &Path) {
     }
 
     // 人格记忆
-    if let Ok(persona) = db::get_persona_memory_all(pool).await {
+    if let Ok(persona) = crate::memory::core_memory_store::get_persona_memory_all(pool).await {
         let entries: Vec<(String, String, String, f64)> = persona
             .iter()
             .map(|p| (p.key.clone(), p.value.clone(), p.category.clone(), p.confidence))

@@ -82,7 +82,7 @@ pub async fn send_message(
     chat_cancel.store(false, Ordering::SeqCst);
 
     // 保存用户消息
-    db::save_message(&pool, &session_id, "user", &content, None, None)
+    crate::memory::episode_store::save_message(&pool, &session_id, "user", &content, None, None)
         .await
         .map_err(e)?;
 
@@ -161,7 +161,7 @@ pub async fn send_message(
             partial:    &str,
         ) {
             if !partial.trim().is_empty() {
-                let _ = db::save_message(pool, session_id, "assistant", partial, None, None).await;
+                let _ = crate::memory::episode_store::save_message(pool, session_id, "assistant", partial, None, None).await;
             }
             let _ = app.emit(
                 "generation_cancelled",
@@ -450,7 +450,7 @@ pub async fn send_message(
         }
 
         // ── 4. 持久化 + 后处理 ───────────────────────────────────────────────
-        let _ = db::save_message(&pool, &session_id, "assistant", &final_text, Some(&final_emotion), None).await;
+        let _ = crate::memory::episode_store::save_message(&pool, &session_id, "assistant", &final_text, Some(&final_emotion), None).await;
 
         if let Ok(s) = db::get_pet_status(&pool).await {
             let meaningful = content.trim().chars().count() >= 2 && !final_text.trim().is_empty();
@@ -496,7 +496,7 @@ pub async fn send_message(
 
             // Working Memory 更新（仅在必要场景触发）
             if working_memory::should_update(&decision_wm, &content) {
-                let recent = db::get_messages(&pool_wm, &sid_wm, 6).await.unwrap_or_default();
+                let recent = crate::memory::episode_store::get_messages(&pool_wm, &sid_wm, 6).await.unwrap_or_default();
                 if let Err(e) = working_memory::update_from_conversation(
                     &pool_wm, &cfg_wm,
                     &working_memory::default_scope(),
@@ -1016,7 +1016,7 @@ pub async fn trigger_vault_sync(
     let cfg      = state.llm_cfg.clone();
     let vault_p  = state.vault_root.clone();
 
-    let session_ids = crate::db::get_all_session_ids(&pool).await.map_err(e)?;
+    let session_ids = crate::memory::episode_store::get_all_session_ids(&pool).await.map_err(e)?;
     let count = session_ids.len();
 
     // 在后台异步执行，避免阻塞前端
@@ -1119,13 +1119,13 @@ pub async fn task_retry(
 /// 获取用户画像（含置信度）
 #[tauri::command]
 pub async fn get_user_profile(state: State<'_, AppState>) -> CmdResult<Vec<db::UserProfileEntry>> {
-    db::get_user_profile_all(&state.pool).await.map_err(e)
+    crate::memory::core_memory_store::get_user_profile_all(&state.pool).await.map_err(e)
 }
 
 /// Chebo 自身画像（persona_memory，供用户了解 Chebo）
 #[tauri::command]
 pub async fn get_chebo_profile(state: State<'_, AppState>) -> CmdResult<Vec<db::PersonaMemory>> {
-    db::get_persona_memory_all(&state.pool).await.map_err(e)
+    crate::memory::core_memory_store::get_persona_memory_all(&state.pool).await.map_err(e)
 }
 
 #[tauri::command]
@@ -1134,7 +1134,7 @@ pub async fn update_chebo_profile_entry(
     key:   String,
     value: String,
 ) -> CmdResult<()> {
-    db::upsert_persona_memory(&state.pool, &key, &value, "trait", 1.0)
+    crate::memory::core_memory_store::upsert_persona_memory(&state.pool, &key, &value, "trait", 1.0)
         .await
         .map_err(e)
 }
@@ -1206,7 +1206,7 @@ pub async fn delete_memory_entry(
     state: State<'_, AppState>,
     key:   String,
 ) -> CmdResult<()> {
-    db::delete_user_profile_entry(&state.pool, &key).await.map_err(e)
+    crate::memory::core_memory_store::delete_user_profile_entry(&state.pool, &key).await.map_err(e)
 }
 
 /// 用户手动更新某条记忆（纠正 LLM 的错误理解，置信度自动设为 1.0）
@@ -1216,5 +1216,5 @@ pub async fn update_memory_entry(
     key:   String,
     value: String,
 ) -> CmdResult<()> {
-    db::update_user_profile_entry(&state.pool, &key, &value).await.map_err(e)
+    crate::memory::core_memory_store::update_user_profile_entry(&state.pool, &key, &value).await.map_err(e)
 }

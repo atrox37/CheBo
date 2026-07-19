@@ -236,7 +236,7 @@ pub async fn update_from_conversation(
     pool: &SqlitePool,
     llm_cfg: &Arc<LlmConfig>,
     scope: &str,
-    recent_messages: &[db::Message],
+    recent_messages: &[crate::memory::episode_store::Message],
     decision: &IntentDecision,
 ) -> Result<()> {
     // 构建对话文本

@@ -306,7 +306,7 @@ pub async fn build_context_pack(
 
     // ── 用户画像 ──────────────────────────────────────────────────────────────
     let profile_items = if req.need_profile {
-        if let Ok(profile) = db::get_user_profile_all(pool).await {
+        if let Ok(profile) = crate::memory::core_memory_store::get_user_profile_all(pool).await {
             profile
                 .iter()
                 .take(req.max_profile_items)
@@ -321,7 +321,7 @@ pub async fn build_context_pack(
 
     // ── 人格记忆 ──────────────────────────────────────────────────────────────
     let persona_items = if req.need_persona {
-        if let Ok(persona) = db::get_persona_memory_all(pool).await {
+        if let Ok(persona) = crate::memory::core_memory_store::get_persona_memory_all(pool).await {
             persona
                 .iter()
                 .filter(|p| p.confidence >= 0.7)
@@ -337,7 +337,7 @@ pub async fn build_context_pack(
 
     // ── 历史摘要 ──────────────────────────────────────────────────────────────
     let summaries = if req.need_summaries {
-        if let Ok(sums) = db::get_summaries(pool, req.max_summaries as i64).await {
+        if let Ok(sums) = crate::memory::episode_store::get_summaries(pool, req.max_summaries as i64).await {
             sums.iter()
                 .rev()
                 .map(|s| format!("  · {}", truncate_memory(&s.summary, 300)))

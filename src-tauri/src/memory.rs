@@ -2,6 +2,9 @@
 // Memory System（P0 基础 + Batch D 四层分级强化）
 #![allow(dead_code)]
 //
+// 子模块：
+//   episode_store — messages + memory_summaries 表 CRUD（已从 db.rs 迁移）
+//
 // 四层记忆读写规则：
 //   短期（messages 表，最近 20 条）     — 每次对话自动读写，load_history_for_context
 //   中期（memory_summaries，每 20 条）  — maybe_summarize 自动触发
@@ -15,13 +18,18 @@
 //   - 中期摘要每 20 条消息触发一次，异步 fire-and-forget
 // ─────────────────────────────────────────────────────────────────────────────
 
+pub mod episode_store;
+pub mod core_memory_store;
+
 use std::sync::Arc;
 
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-use crate::db::{self, Message};
+use crate::db;
 use crate::llm::{self, LlmConfig, LlmMessage};
+use crate::memory::core_memory_store as cms;
+// episode_store 通过 pub mod episode_store 已在作用域内
 
 // ─── 常量 ─────────────────────────────────────────────────────────────────────
 
@@ -36,7 +44,7 @@ pub async fn load_history_for_context(
     session_id: &str,
     limit:      i64,
 ) -> Result<Vec<LlmMessage>> {
-    let msgs = db::get_messages(pool, session_id, limit).await?;
+    let msgs = episode_store::get_messages(pool, session_id, limit).await?;
     Ok(msgs
         .iter()
         .filter(|m| m.role == "user" || m.role == "assistant")
@@ -48,8 +56,8 @@ pub async fn load_history_for_context(
 }
 
 /// 获取全部聊天记录（供前端历史页面展示）
-pub async fn get_all_messages(pool: &SqlitePool) -> Result<Vec<Message>> {
-    db::get_all_messages(pool).await
+pub async fn get_all_messages(pool: &SqlitePool) -> Result<Vec<episode_store::Message>> {
+    episode_store::get_all_messages(pool).await
 }
 
 /// 保存一对对话（user + assistant）
@@ -60,8 +68,8 @@ pub async fn save_exchange(
     assistant_content: &str,
     emotion:           Option<&str>,
 ) -> Result<()> {
-    db::save_message(pool, session_id, "user", user_content, None, None).await?;
-    db::save_message(pool, session_id, "assistant", assistant_content, emotion, None).await?;
+    episode_store::save_message(pool, session_id, "user", user_content, None, None).await?;
+    episode_store::save_message(pool, session_id, "assistant", assistant_content, emotion, None).await?;
     Ok(())
 }
 
@@ -76,7 +84,7 @@ pub async fn build_rich_context_string(
     let mut parts: Vec<String> = Vec::new();
 
     // ── 0. Batch D: 人格记忆（Chebo 自身，高置信度优先）──────────────────────
-    if let Ok(persona) = db::get_persona_memory_all(pool).await {
+    if let Ok(persona) = cms::get_persona_memory_all(pool).await {
         let high_conf: Vec<_> = persona.iter().filter(|p| p.confidence >= 0.7).collect();
         if !high_conf.is_empty() {
             let lines: Vec<String> = high_conf
@@ -89,7 +97,7 @@ pub async fn build_rich_context_string(
     }
 
     // ── 1. 用户画像 ──────────────────────────────────────────────────────────
-    if let Ok(profile) = db::get_user_profile_all(pool).await {
+    if let Ok(profile) = cms::get_user_profile_all(pool).await {
         if !profile.is_empty() {
             let lines: Vec<String> = profile
                 .iter()
@@ -101,7 +109,7 @@ pub async fn build_rich_context_string(
     }
 
     // ── 2. 中期：历史对话摘要（最近 10 条，从2提升到10以覆盖更长的对话历史）───
-    if let Ok(summaries) = db::get_summaries(pool, 10).await {
+    if let Ok(summaries) = episode_store::get_summaries(pool, 10).await {
         if !summaries.is_empty() {
             let lines: Vec<String> = summaries
                 .iter()
@@ -133,16 +141,16 @@ pub async fn update_persona_memory(
     confidence: f64,
 ) {
     // 旧值置信度衰减（conflict resolution）
-    let _ = db::decay_persona_confidence(pool, key, 0.15).await;
+    let _ = cms::decay_persona_confidence(pool, key, 0.15).await;
     // 写入新值
-    if let Err(e) = db::upsert_persona_memory(pool, key, value, category, confidence).await {
+    if let Err(e) = cms::upsert_persona_memory(pool, key, value, category, confidence).await {
         log::warn!("update_persona_memory: {e}");
     }
 }
 
 /// 读取人格记忆并生成注入段落（供 build_rich_context_string 以外的场景使用）
 pub async fn get_persona_context(pool: &SqlitePool) -> String {
-    match db::get_persona_memory_all(pool).await {
+    match cms::get_persona_memory_all(pool).await {
         Ok(persona) if !persona.is_empty() => {
             let lines: Vec<String> = persona
                 .iter()
@@ -172,7 +180,7 @@ pub async fn maybe_save_long_term(
         return false;
     }
     let key = format!("auto_{}", content.chars().take(10).collect::<String>());
-    match db::set_user_profile(pool, &key, content).await {
+    match cms::set_user_profile(pool, &key, content).await {
         Ok(()) => true,
         Err(e) => {
             log::warn!("maybe_save_long_term: {e}");
@@ -191,13 +199,13 @@ pub async fn maybe_summarize(
     session_id: &str,
 ) {
     // 查询上次摘要覆盖到的最后一条消息 ID
-    let last_id = match db::get_last_summarized_msg_id(pool, session_id).await {
+    let last_id = match episode_store::get_last_summarized_msg_id(pool, session_id).await {
         Ok(id) => id,
         Err(e) => { log::warn!("maybe_summarize get_last_id: {e}"); return; }
     };
 
     // 统计新增消息条数
-    let new_count = match db::count_messages_after(pool, session_id, last_id).await {
+    let new_count = match episode_store::count_messages_after(pool, session_id, last_id).await {
         Ok(c) => c,
         Err(e) => { log::warn!("maybe_summarize count: {e}"); return; }
     };
@@ -207,12 +215,12 @@ pub async fn maybe_summarize(
     }
 
     // 获取待摘要的消息范围
-    let end_id = match db::get_latest_message_id(pool, session_id).await {
+    let end_id = match episode_store::get_latest_message_id(pool, session_id).await {
         Ok(id) => id,
         Err(e) => { log::warn!("maybe_summarize get_latest_id: {e}"); return; }
     };
 
-    let messages = match db::get_messages_in_range(pool, session_id, last_id, end_id).await {
+    let messages = match episode_store::get_messages_in_range(pool, session_id, last_id, end_id).await {
         Ok(m) => m,
         Err(e) => { log::warn!("maybe_summarize get_range: {e}"); return; }
     };
@@ -245,7 +253,7 @@ pub async fn maybe_summarize(
 
     match llm::call_silent(llm_msgs, llm_cfg).await {
         Ok((summary, _)) if !summary.is_empty() => {
-            if let Err(e) = db::save_summary(pool, session_id, last_id, end_id, &summary).await {
+            if let Err(e) = episode_store::save_summary(pool, session_id, last_id, end_id, &summary).await {
                 log::warn!("maybe_summarize save_summary: {e}");
             } else {
                 log::info!("对话摘要已生成（msg {last_id}~{end_id}）: {}", &summary[..summary.len().min(50)]);
@@ -334,7 +342,7 @@ async fn extract_remember_requests(pool: &SqlitePool, _session_id: &str, content
         log::info!("Chebo 画像更新（关系）: {fact}");
     } else {
         let key = auto_user_note_key(&fact);
-        if let Err(e) = db::update_user_profile_entry(pool, &key, &fact).await {
+        if let Err(e) = cms::update_user_profile_entry(pool, &key, &fact).await {
             log::warn!("extract_remember_requests user_profile: {e}");
         } else {
             log::info!("用户画像更新（记住）: {key} = {fact}");
@@ -397,7 +405,7 @@ pub async fn extract_user_profile(pool: &SqlitePool, user_content: &str) {
     for (trigger, key) in rules {
         if user_content.contains(trigger) {
             if let Some(value) = extract_after_trigger(user_content, trigger, 30) {
-                let _ = db::set_user_profile(pool, key, &value).await;
+                let _ = cms::set_user_profile(pool, key, &value).await;
                 log::debug!("用户画像更新: {key} = {value}");
             }
             break; // 每条消息只提取第一个匹配
