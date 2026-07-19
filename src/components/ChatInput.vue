@@ -729,7 +729,7 @@ async function onMicUp() {
 .voice-err { display: block; color: #d05050; margin-top: 2px; }
 </style>
 
-/* ?? Ticket 11: ÅÅ¶ÓÏûÏ¢Çø */
+/* ?? Ticket 11: ï¿½Å¶ï¿½ï¿½ï¿½Ï¢ï¿½ï¿½ */
 .queued-area {
   padding: 4px 10px 0;
   display: flex; flex-direction: column; gap: 4px;
